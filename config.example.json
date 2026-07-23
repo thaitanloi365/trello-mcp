@@ -1,0 +1,10 @@
+{
+  "api_key": "your-trello-api-key",
+  "token": "your-trello-api-token",
+  "default_board_id": "",
+  "workspace_id": "",
+  "allowed_workspace_ids": [],
+  "api_base_url": "https://api.trello.com/1",
+  "request_timeout_seconds": 30,
+  "max_upload_bytes": 10485760
+}
