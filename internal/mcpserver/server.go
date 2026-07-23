@@ -9,9 +9,10 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/thaitanloi365/trello-mcp/internal/trello"
+	"github.com/thaitanloi365/trello-mcp/internal/version"
 )
 
-const Version = "0.1.0"
+const Version = version.Current
 
 type fieldKind string
 

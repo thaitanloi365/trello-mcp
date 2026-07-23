@@ -5,13 +5,17 @@ A Go implementation of a Model Context Protocol server for Trello, inspired by
 It exposes the same 57 MCP tool names, runs over stdio, and adds a first-class
 CLI for persistent configuration.
 
-## Build
+## Install
 
-Go 1.26.5 or newer is required.
+Install the latest source directly with Go 1.26.5 or newer:
 
 ```bash
-go build -o bin/trello-mcp ./cmd/trello-mcp
+go install github.com/thaitanloi365/trello-mcp/cmd/trello-mcp@latest
 ```
+
+For Homebrew, source builds, PATH setup, upgrades, and platform-specific
+instructions for macOS, Linux, and Windows, see the
+[installation guide](docs/installation.md).
 
 ## Configure from the CLI
 

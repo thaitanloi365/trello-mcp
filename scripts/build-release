@@ -1,0 +1,88 @@
+#!/bin/sh
+set -eu
+
+release_version=${1:-}
+output_dir=${2:-}
+
+if [ -z "$release_version" ]; then
+  echo "usage: scripts/build-release VERSION [OUTPUT_DIR]" >&2
+  exit 2
+fi
+
+case "$release_version" in
+  *[!0-9A-Za-z.-]*)
+    echo "release version contains unsupported characters: $release_version" >&2
+    exit 2
+    ;;
+esac
+
+if [ -z "$output_dir" ]; then
+  output_dir="dist/release/$release_version"
+fi
+
+case "$output_dir" in
+  /*) ;;
+  *) output_dir="$PWD/$output_dir" ;;
+esac
+
+if [ -e "$output_dir" ]; then
+  echo "release output already exists: $output_dir" >&2
+  exit 1
+fi
+
+actual_version=$(go run ./cmd/trello-mcp version)
+if [ "$actual_version" != "$release_version" ]; then
+  echo "binary version is $actual_version, expected $release_version" >&2
+  exit 1
+fi
+
+temporary_dir=$(mktemp -d "${TMPDIR:-/tmp}/trello-mcp-release.XXXXXX")
+trap 'rm -rf "$temporary_dir"' EXIT HUP INT TERM
+
+mkdir -p "$output_dir"
+
+build_archive() {
+  target_os=$1
+  target_arch=$2
+  archive_type=$3
+  base_name="trello-mcp_${release_version}_${target_os}_${target_arch}"
+  package_dir="$temporary_dir/$base_name"
+  binary_name=trello-mcp
+
+  if [ "$target_os" = windows ]; then
+    binary_name=trello-mcp.exe
+  fi
+
+  mkdir -p "$package_dir"
+  CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" \
+    go build -trimpath -ldflags "-s -w" \
+    -o "$package_dir/$binary_name" ./cmd/trello-mcp
+  cp LICENSE README.md "$package_dir/"
+
+  if [ "$archive_type" = zip ]; then
+    (
+      cd "$temporary_dir"
+      zip -qr "$output_dir/$base_name.zip" "$base_name"
+    )
+  else
+    tar -C "$temporary_dir" -czf "$output_dir/$base_name.tar.gz" "$base_name"
+  fi
+}
+
+build_archive darwin amd64 tar
+build_archive darwin arm64 tar
+build_archive linux amd64 tar
+build_archive linux arm64 tar
+build_archive windows amd64 zip
+build_archive windows arm64 zip
+
+(
+  cd "$output_dir"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum trello-mcp_"$release_version"_* > checksums.txt
+  else
+    shasum -a 256 trello-mcp_"$release_version"_* > checksums.txt
+  fi
+)
+
+echo "$output_dir"

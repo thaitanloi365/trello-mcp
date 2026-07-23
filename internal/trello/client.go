@@ -18,9 +18,13 @@ import (
 	"time"
 
 	"github.com/thaitanloi365/trello-mcp/internal/config"
+	"github.com/thaitanloi365/trello-mcp/internal/version"
 )
 
-const maxResponseBytes = 16 << 20
+const (
+	maxResponseBytes = 16 << 20
+	userAgent        = "trello-mcp-go/" + version.Current
+)
 
 // APIError is a sanitized Trello HTTP error. It deliberately excludes the
 // request URL because Trello credentials are query parameters.
@@ -163,7 +167,7 @@ func (c *Client) execute(
 			req.Header.Set("Content-Type", contentType)
 		}
 		req.Header.Set("Accept", "application/json")
-		req.Header.Set("User-Agent", "trello-mcp-go/0.1.0")
+		req.Header.Set("User-Agent", userAgent)
 		resp, err := c.http.Do(req)
 		if err != nil {
 			cancel()
@@ -324,7 +328,7 @@ func (c *Client) DownloadAttachment(ctx context.Context, cardID, attachmentID, d
 		return nil, fmt.Errorf("create attachment download: %w", err)
 	}
 	req.Header.Set("Authorization", fmt.Sprintf(`OAuth oauth_consumer_key="%s", oauth_token="%s"`, cfg.APIKey, cfg.Token))
-	req.Header.Set("User-Agent", "trello-mcp-go/0.1.0")
+	req.Header.Set("User-Agent", userAgent)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("download Trello attachment: %w", err)

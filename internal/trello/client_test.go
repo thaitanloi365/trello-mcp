@@ -44,6 +44,9 @@ func TestDoAddsCredentialsAndDecodesResponse(t *testing.T) {
 		if got := r.URL.Query().Get("limit"); got != "5" {
 			t.Errorf("limit = %q", got)
 		}
+		if got := r.Header.Get("User-Agent"); got != userAgent {
+			t.Errorf("User-Agent = %q, want %q", got, userAgent)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": "card-1"})
 	})
 	result, err := client.Do(context.Background(), http.MethodGet, "/cards/card-1", map[string]any{"limit": 5}, nil)
@@ -95,6 +98,9 @@ func TestDownloadAttachmentUsesAuthenticatedTrelloDownloadEndpoint(t *testing.T)
 		case "/cards/card/attachments/attachment/download/report.txt":
 			if got := r.Header.Get("Authorization"); !strings.Contains(got, "test-key") || !strings.Contains(got, "test-token") {
 				t.Errorf("missing OAuth credentials: %q", got)
+			}
+			if got := r.Header.Get("User-Agent"); got != userAgent {
+				t.Errorf("User-Agent = %q, want %q", got, userAgent)
 			}
 			_, _ = w.Write([]byte("attachment contents"))
 		default:
