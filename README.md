@@ -2,7 +2,7 @@
 
 A Go implementation of a Model Context Protocol server for Trello, inspired by
 [`delorenj/mcp-server-trello`](https://github.com/delorenj/mcp-server-trello).
-It exposes the same 57 MCP tool names, runs over stdio, and adds a first-class
+It exposes 28 token-lean MCP tools, runs over stdio, and adds a first-class
 CLI for persistent configuration.
 
 ## Install
@@ -214,62 +214,66 @@ available for secret-manager and container workflows.
 
 ## Tools
 
-The server registers all 57 names from the reference implementation:
+28 tools, built for an AI reader: few tools, names instead of IDs, and short
+responses.
 
-- Cards: `get_card`, `get_cards_by_list_id`, `get_my_cards`,
-  `add_card_to_list`, `add_cards_to_list`, `update_card_details`,
-  `archive_card`, `move_card`, `copy_card`, `watch_card`, and
-  `get_card_history`
-- Lists and activity: `get_lists`, `get_recent_activity`, `add_list_to_board`,
-  `archive_list`, `update_list`, `update_list_position`, and `watch_list`
-- Boards and workspaces: `list_boards`, `create_board`, `set_active_board`,
-  `get_active_board_info`, `list_workspaces`, `set_active_workspace`, and
-  `list_boards_in_workspace`
-- Comments: `add_comment`, `update_comment`, `delete_comment`, and
-  `get_card_comments`
-- Checklists: `create_checklist`, `get_checklist_items`,
-  `add_checklist_item`, `update_checklist_item`, `delete_checklist_item`,
-  `get_checklist_by_name`, `find_checklist_items_by_description`,
-  `get_acceptance_criteria`, and `copy_checklist`
-- Members and labels: `get_board_members`, `assign_member_to_card`,
-  `remove_member_from_card`, `get_board_labels`, `create_label`,
-  `update_label`, and `delete_label`
-- Attachments and custom fields: `attach_image_to_card`,
-  `attach_file_to_card`, `attach_data_to_card`, `attach_image_data_to_card`,
-  `download_attachment`, `get_board_custom_fields`, and
-  `update_card_custom_field`
-- Operations: `get_health`, `get_health_detailed`, `get_health_metadata`,
-  `get_health_performance`, and `perform_system_repair`
+- Read: `get_card`, `list_cards`, `get_activity`, `get_board`,
+  `list_boards`, `list_workspaces`, `find_checklist_items`, `get_health`
+- Cards: `create_cards`, `update_card`, `set_custom_field`, `copy_card`,
+  `add_attachment`, `download_attachment`
+- Comments: `add_comment`, `update_comment`, `delete_comment`
+- Checklists: `create_checklist`, `add_checklist_item`,
+  `update_checklist_item`, `delete_checklist_item`
+- Lists, boards, and labels: `create_list`, `update_list`, `create_board`,
+  `set_active`, `create_label`, `update_label`, `delete_label`
 
-Every tool has an MCP JSON Schema. Board-aware tools accept an optional
-`boardId` and otherwise use `default_board_id`. Workspace allow-list checks are
-applied to boards, cards, lists, comments, checklists, members, labels, and
-attachments before reads or writes.
+Read tools carry the MCP `readOnlyHint` annotation. Board tools take an
+optional `boardId` and otherwise use the active board. Workspace allow-list
+checks run before every read and write.
 
-### LLM-first card reads
+### Names in, names out
 
-`get_card` accepts a full card ID, an 8-character short link, or a
-`trello.com/c/...` URL. It returns compact Markdown by default and
-combines card details with recent comments in one Trello request when no
-workspace allow-list is configured.
+Cards take a full ID, an 8-character short link, or a `trello.com/c/...` URL.
+Lists, labels, members, and custom fields take a name or an ID: names match
+without regard to case, members also match by username or `me`, and unnamed
+labels match by color. An unknown or ambiguous name fails before anything is
+written and lists the options.
 
-Optional arguments:
+Results use the same names. `list_cards` returns each card's short link,
+title, list, dates, labels, and members, not raw Trello IDs. `get_board`
+returns the board's lists, labels, members, and custom fields with their IDs
+in one call.
 
-- `detailLevel`: `compact` (default) or `full`
-- `commentsLimit`: `10` by default, `0` to omit comments, maximum `100`
-- `format`: `markdown` (default) or `json`
-- `delivery`: `auto` (default), `inline`, or `file`
-- `includeMarkdown`: deprecated compatibility alias for `format=markdown`
+`update_card` changes any card field in one call: title, description, dates,
+reminder (`dueReminder` in minutes, `-1` for none), list, position, archive,
+watch, and labels or members to add or remove. `create_checklist` takes its
+`items`. `set_custom_field` takes the field name and a plain value, or `clear: true`
+to clear it.
 
-`delivery=inline` always returns the complete payload in the MCP result.
-`delivery=file` atomically writes the payload to the private
-`trello-mcp/outputs` directory under the operating system's user cache and
-returns its absolute path. `delivery=auto` uses inline delivery up to 16 KiB
-and file delivery for larger payloads. Output directories use mode `0700` and
-files use mode `0600`.
+### Output format
 
-Compact responses omit Trello display, preview, cover, limits, and duplicated
-card/board/list metadata. Use `get_card_comments` for additional comments.
+`get_card` returns Markdown: board, list, dates, labels, members, custom
+fields, link, description, checklists, attachment links, and the latest
+comments. Each checklist, item, attachment, and comment shows the ID a write
+tool needs. `commentsLimit` defaults to `10` (maximum `100`). `delivery` is
+`auto` (default), `inline`, or `file`; `auto` writes cards over 16 KiB to a
+private file under the user cache directory (mode `0600`) and returns its path.
+
+Other tools return compact JSON without HTML escaping and without empty fields.
+Write tools return a short acknowledgement (ID, name, link, dates, state)
+instead of the full Trello object. `get_activity` returns one flat entry per
+action: who, what, which card, and which fields changed.
+
+### Replies
+
+`add_comment` and `update_comment` tell the model to write plain English,
+main point first, in short bullets, and to link files as `[name](url)`. Bare
+Trello attachment URLs in comment text become `[file name](url)` links before
+posting. Tools that write text other people see tell the model to show you the
+exact text and wait for your approval.
+
+The `draft_reply` prompt (`/mcp__trello__draft_reply` in Claude Code) reads a
+card, drafts a reply in that style, and posts it only after you approve.
 
 ## Security notes
 

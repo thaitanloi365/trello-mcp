@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/thaitanloi365/trello-mcp/internal/config"
@@ -10,7 +11,7 @@ import (
 
 func TestToolDefinitionsAreCompleteAndUnique(t *testing.T) {
 	definitions := toolDefinitions()
-	if got, want := len(definitions), 57; got != want {
+	if got, want := len(definitions), 28; got != want {
 		t.Fatalf("tool count = %d, want %d", got, want)
 	}
 	seen := make(map[string]bool)
@@ -25,8 +26,8 @@ func TestToolDefinitionsAreCompleteAndUnique(t *testing.T) {
 		}
 	}
 	for _, requiredName := range []string{
-		"get_card", "add_card_to_list", "list_boards", "set_active_board",
-		"create_checklist", "update_card_custom_field", "download_attachment", "get_health",
+		"get_card", "list_cards", "create_cards", "update_card", "add_comment",
+		"create_checklist", "set_custom_field", "add_attachment", "get_health",
 	} {
 		if !seen[requiredName] {
 			t.Errorf("missing tool %q", requiredName)
@@ -54,29 +55,44 @@ func TestGetCardDefinitionIsLLMOptimized(t *testing.T) {
 		if definition.Name != "get_card" {
 			continue
 		}
-		if definition.OutputSchema == nil {
-			t.Fatal("get_card output schema is nil")
+		if !definition.ReadOnly {
+			t.Error("get_card is not marked read-only")
 		}
-		schema := inputSchema(definition.Fields)
-		properties := schema["properties"].(map[string]any)
-		for _, name := range []string{"cardId", "detailLevel", "commentsLimit", "format", "delivery"} {
-			if _, ok := properties[name]; !ok {
-				t.Errorf("get_card schema is missing %q", name)
-			}
-		}
-		commentsLimit := properties["commentsLimit"].(map[string]any)
-		if got := commentsLimit["default"]; got != 10 {
+		properties := inputSchema(definition.Fields)["properties"].(map[string]any)
+		if got := properties["commentsLimit"].(map[string]any)["default"]; got != 10 {
 			t.Errorf("commentsLimit default = %#v, want 10", got)
 		}
-		format := properties["format"].(map[string]any)
-		if got := format["default"]; got != "markdown" {
-			t.Errorf("format default = %#v, want markdown", got)
-		}
-		delivery := properties["delivery"].(map[string]any)
-		if got := delivery["default"]; got != "auto" {
+		if got := properties["delivery"].(map[string]any)["default"]; got != "auto" {
 			t.Errorf("delivery default = %#v, want auto", got)
 		}
 		return
 	}
 	t.Fatal("get_card definition not found")
+}
+
+func TestCreateCardsSchemaTypesEachCard(t *testing.T) {
+	t.Parallel()
+	for _, definition := range toolDefinitions() {
+		if definition.Name != "create_cards" {
+			continue
+		}
+		if err := validateArguments(definition.Fields, map[string]any{
+			"list": "Doing", "cards": []any{map[string]any{"title": "wrong key"}},
+		}); err == nil || !strings.Contains(err.Error(), "cards[0]") {
+			t.Fatalf("err = %v, want a cards[0] validation error", err)
+		}
+		return
+	}
+	t.Fatal("create_cards definition not found")
+}
+
+func TestEncodeResultKeepsAmpersands(t *testing.T) {
+	t.Parallel()
+	got, err := encodeResult(map[string]any{"name": "Terms & <Privacy>"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"name":"Terms & <Privacy>"}`; got != want {
+		t.Fatalf("encodeResult = %s, want %s", got, want)
+	}
 }

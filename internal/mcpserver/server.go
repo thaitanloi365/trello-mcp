@@ -33,13 +33,14 @@ type fieldDefinition struct {
 	Required    bool
 	Enum        []string
 	Default     any
+	Items       []fieldDefinition // object_array element fields
 }
 
 type toolDefinition struct {
-	Name         string
-	Description  string
-	Fields       []fieldDefinition
-	OutputSchema any
+	Name        string
+	Description string
+	Fields      []fieldDefinition
+	ReadOnly    bool
 }
 
 type rawTextResult string
@@ -54,12 +55,40 @@ func New(client *trello.Client) *Server {
 	instance := &Server{client: client}
 	instance.mcp = mcp.NewServer(
 		&mcp.Implementation{Name: "trello-mcp-go", Version: Version},
-		&mcp.ServerOptions{Instructions: "Use these tools to inspect and update Trello. Responses are optimized for LLM consumption. Prefer configured active board/workspace IDs when the caller does not supply one."},
+		&mcp.ServerOptions{Instructions: "Trello tools. Cards take an ID, short link, or URL; lists, labels, members, and custom fields take a name or ID. " +
+			"Board tools default to the active board. Before any change other people see (comments, new or updated cards, checklists), " +
+			"show the user a preview and wait for approval. Keep text short: main point first."},
 	)
 	for _, definition := range toolDefinitions() {
 		instance.register(definition)
 	}
+	instance.mcp.AddPrompt(&mcp.Prompt{
+		Name:        "draft_reply",
+		Description: "Draft a reply comment for a Trello card and post it only after approval",
+		Arguments: []*mcp.PromptArgument{
+			{Name: "card", Description: "Card ID, short link, or Trello card URL", Required: true},
+			{Name: "notes", Description: "What the reply should say"},
+		},
+	}, draftReplyPrompt)
 	return instance
+}
+
+func draftReplyPrompt(_ context.Context, request *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+	card := strings.TrimSpace(request.Params.Arguments["card"])
+	if card == "" {
+		return nil, fmt.Errorf("argument %q is required", "card")
+	}
+	text := "Draft a reply comment for Trello card " + card + ".\n" +
+		"1. Read the card with get_card.\n" +
+		"2. " + replyStyle + "\n" +
+		"3. Show me the draft. Post it with add_comment only after I approve.\n"
+	if notes := strings.TrimSpace(request.Params.Arguments["notes"]); notes != "" {
+		text += "\nWhat to say: " + notes + "\n"
+	}
+	return &mcp.GetPromptResult{
+		Description: "Draft a Trello reply",
+		Messages:    []*mcp.PromptMessage{{Role: "user", Content: &mcp.TextContent{Text: text}}},
+	}, nil
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -69,13 +98,12 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) MCP() *mcp.Server { return s.mcp }
 
 func (s *Server) register(definition toolDefinition) {
+	tool := &mcp.Tool{Name: definition.Name, Description: definition.Description, InputSchema: inputSchema(definition.Fields)}
+	if definition.ReadOnly {
+		tool.Annotations = &mcp.ToolAnnotations{ReadOnlyHint: true}
+	}
 	s.mcp.AddTool(
-		&mcp.Tool{
-			Name:         definition.Name,
-			Description:  definition.Description,
-			InputSchema:  inputSchema(definition.Fields),
-			OutputSchema: definition.OutputSchema,
-		},
+		tool,
 		func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args := make(map[string]any)
 			if request.Params.Arguments != nil {
@@ -95,21 +123,27 @@ func (s *Server) register(definition toolDefinition) {
 					Content: []mcp.Content{&mcp.TextContent{Text: string(text)}},
 				}, nil
 			}
-			payload, err := json.Marshal(result)
+			payload, err := encodeResult(result)
 			if err != nil {
 				return toolError(fmt.Errorf("encode tool result: %w", err)), nil
 			}
-			response := &mcp.CallToolResult{
-				Content: []mcp.Content{&mcp.TextContent{Text: string(payload)}},
-			}
-			if definition.OutputSchema != nil {
-				if structured, ok := result.(map[string]any); ok {
-					response.StructuredContent = structured
-				}
-			}
-			return response, nil
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: payload}},
+			}, nil
 		},
 	)
+}
+
+// encodeResult writes compact JSON without HTML escaping: json.Marshal would
+// turn every &, <, and > into a six-character \u escape the model must decode.
+func encodeResult(result any) (string, error) {
+	var out strings.Builder
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(result); err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(out.String(), "\n"), nil
 }
 
 func toolError(err error) *mcp.CallToolResult {
@@ -130,6 +164,9 @@ func inputSchema(fields []fieldDefinition) map[string]any {
 		case kindObjectArray:
 			property["type"] = "array"
 			property["items"] = map[string]any{"type": "object"}
+			if len(field.Items) > 0 {
+				property["items"] = inputSchema(field.Items)
+			}
 		case kindObject:
 			property["type"] = "object"
 			property["additionalProperties"] = true
@@ -178,8 +215,28 @@ func validateArguments(fields []fieldDefinition, args map[string]any) error {
 		if err := validateKind(field, value); err != nil {
 			return err
 		}
+		for index, item := range objectItems(field, value) {
+			if err := validateArguments(field.Items, item); err != nil {
+				return fmt.Errorf("%s[%d]: %w", field.Name, index, err)
+			}
+		}
 	}
 	return nil
+}
+
+// objectItems returns the elements of an object_array that declares Items.
+// validateKind has already confirmed value is an array.
+func objectItems(field fieldDefinition, value any) []map[string]any {
+	if len(field.Items) == 0 {
+		return nil
+	}
+	items := value.([]any)
+	result := make([]map[string]any, len(items))
+	for index, item := range items {
+		object, _ := item.(map[string]any)
+		result[index] = object
+	}
+	return result
 }
 
 func validateKind(field fieldDefinition, value any) error {

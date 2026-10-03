@@ -2,161 +2,95 @@ package mcpserver
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 )
 
 func (s *Server) handle(ctx context.Context, name string, args map[string]any) (any, error) {
 	switch name {
-	case "get_cards_by_list_id":
-		listID := text(args, "listId")
-		if err := s.ensureListAllowed(ctx, listID); err != nil {
-			return nil, err
-		}
-		return s.client.Do(ctx, http.MethodGet, "/lists/"+escape(listID)+"/cards", map[string]any{
-			"fields": "id,name,desc,due,start,dueComplete,closed,pos,url,idBoard,idList,idMembers,idLabels", "limit": integer(args, "limit", 100),
-		}, nil)
-	case "get_lists":
+	case "get_card":
+		return s.getCard(ctx, text(args, "cardId"), getCardOptions{
+			commentsLimit: integer(args, "commentsLimit", 10),
+			delivery:      textDefault(args, "delivery", "auto"),
+		})
+	case "list_cards":
+		return s.listCards(ctx, args)
+	case "get_activity":
+		return s.activity(ctx, args)
+	case "get_board":
 		boardID, err := s.board(ctx, args)
 		if err != nil {
 			return nil, err
 		}
-		return s.client.Do(ctx, http.MethodGet, "/boards/"+escape(boardID)+"/lists", map[string]any{"filter": "open", "fields": "id,name,closed,pos,idBoard,subscribed"}, nil)
-	case "get_recent_activity":
-		boardID, err := s.board(ctx, args)
+		index, err := s.boardIndex(ctx, boardID)
 		if err != nil {
 			return nil, err
 		}
-		return s.client.Do(ctx, http.MethodGet, "/boards/"+escape(boardID)+"/actions", map[string]any{"filter": "all", "limit": integer(args, "limit", 50)}, nil)
-	case "add_card_to_list":
-		listID := text(args, "listId")
-		if err := s.ensureListAllowed(ctx, listID); err != nil {
+		return boardSummary(index), nil
+	case "list_boards":
+		return s.listBoards(ctx, text(args, "workspaceId"))
+	case "list_workspaces":
+		result, err := s.client.Do(ctx, http.MethodGet, "/members/me/organizations", map[string]any{"fields": "id,displayName"}, nil)
+		if err != nil {
 			return nil, err
 		}
-		return s.client.Do(ctx, http.MethodPost, "/cards", mapArgs(args, map[string]string{
-			"listId": "idList", "name": "name", "description": "desc", "due": "due", "start": "start", "position": "pos",
-		}), nil)
-	case "update_card_details":
-		cardID := text(args, "cardId")
-		if err := s.ensureCardAllowed(ctx, cardID); err != nil {
+		return s.filterObjectsByWorkspace(result, "id"), nil
+	case "find_checklist_items":
+		return s.findChecklistItems(ctx, args)
+	case "get_health":
+		return s.health(ctx)
+	case "download_attachment":
+		cardID, err := s.allowedCard(ctx, args, "cardId")
+		if err != nil {
 			return nil, err
 		}
-		return s.client.Do(ctx, http.MethodPut, "/cards/"+escape(cardID), mapArgs(args, map[string]string{
-			"name": "name", "description": "desc", "due": "due", "start": "start", "dueComplete": "dueComplete", "closed": "closed", "position": "pos",
-		}), nil)
-	case "archive_card":
-		return s.updateCardFlag(ctx, text(args, "cardId"), "closed", true)
-	case "watch_card":
-		return s.updateCardFlag(ctx, text(args, "cardId"), "subscribed", boolean(args, "subscribed", true))
-	case "watch_list":
-		listID := text(args, "listId")
-		if err := s.ensureListAllowed(ctx, listID); err != nil {
+		return s.client.DownloadAttachment(ctx, cardID, text(args, "attachmentId"), text(args, "destinationPath"))
+
+	case "create_cards":
+		return s.createCards(ctx, args)
+	case "update_card":
+		return s.updateCard(ctx, args)
+	case "set_custom_field":
+		return s.setCustomField(ctx, args)
+	case "copy_card":
+		sourceRef, err := s.allowedCard(ctx, args, "sourceCardId")
+		if err != nil {
 			return nil, err
 		}
-		return s.client.Do(ctx, http.MethodPut, "/lists/"+escape(listID), map[string]any{"subscribed": boolean(args, "subscribed", true)}, nil)
-	case "move_card":
-		cardID, listID := text(args, "cardId"), text(args, "listId")
-		if err := s.ensureCardAllowed(ctx, cardID); err != nil {
+		// idCardSource must be the full ID, and a list name means the source card's board.
+		source, err := s.client.Do(ctx, http.MethodGet, "/cards/"+escape(sourceRef), map[string]any{"fields": "id,idBoard"}, nil)
+		if err != nil {
 			return nil, err
 		}
-		if err := s.ensureListAllowed(ctx, listID); err != nil {
+		listID, _, err := s.resolveList(ctx, args, s.boardIDRefs(nestedString(source, "idBoard")))
+		if err != nil {
 			return nil, err
 		}
-		params := map[string]any{"idList": listID}
-		copyArg(params, "pos", args, "position")
-		return s.client.Do(ctx, http.MethodPut, "/cards/"+escape(cardID), params, nil)
-	case "add_list_to_board":
+		params := mapArgs(args, map[string]string{"name": "name", "position": "pos"})
+		params["idCardSource"], params["idList"] = nestedString(source, "id"), listID
+		if values, ok := args["keepFromSource"].([]any); ok {
+			params["keepFromSource"] = joinValues(values)
+		}
+		return s.write(ctx, http.MethodPost, "/cards", params, nil)
+	case "create_list":
 		boardID, err := s.board(ctx, args)
 		if err != nil {
 			return nil, err
 		}
 		params := map[string]any{"idBoard": boardID, "name": text(args, "name")}
 		copyArg(params, "pos", args, "position")
-		return s.client.Do(ctx, http.MethodPost, "/lists", params, nil)
-	case "archive_list":
-		listID := text(args, "listId")
-		if err := s.ensureListAllowed(ctx, listID); err != nil {
-			return nil, err
-		}
-		return s.client.Do(ctx, http.MethodPut, "/lists/"+escape(listID), map[string]any{"closed": true}, nil)
+		return s.write(ctx, http.MethodPost, "/lists", params, nil)
 	case "update_list":
-		listID := text(args, "listId")
-		if err := s.ensureListAllowed(ctx, listID); err != nil {
-			return nil, err
-		}
-		return s.client.Do(ctx, http.MethodPut, "/lists/"+escape(listID), mapArgs(args, map[string]string{"name": "name", "closed": "closed"}), nil)
-	case "update_list_position":
-		listID := text(args, "listId")
-		if err := s.ensureListAllowed(ctx, listID); err != nil {
-			return nil, err
-		}
-		return s.client.Do(ctx, http.MethodPut, "/lists/"+escape(listID), map[string]any{"pos": text(args, "position")}, nil)
-	case "get_my_cards":
-		result, err := s.client.Do(ctx, http.MethodGet, "/members/me/cards", map[string]any{
-			"filter": "visible", "fields": "id,name,desc,due,start,closed,url,idBoard,idList", "limit": integer(args, "limit", 100),
-		}, nil)
+		listID, _, err := s.resolveList(ctx, args, nil)
 		if err != nil {
 			return nil, err
 		}
-		return s.filterByWorkspace(ctx, result)
-	case "attach_image_to_card":
-		cardID := text(args, "cardId")
-		if err := s.ensureCardAllowed(ctx, cardID); err != nil {
-			return nil, err
-		}
-		params := map[string]any{"url": text(args, "imageUrl"), "name": textDefault(args, "name", "Image Attachment")}
-		copyArg(params, "setCover", args, "setCover")
-		return s.client.Do(ctx, http.MethodPost, "/cards/"+escape(cardID)+"/attachments", params, nil)
-	case "attach_file_to_card":
-		cardID := text(args, "cardId")
-		if err := s.ensureCardAllowed(ctx, cardID); err != nil {
-			return nil, err
-		}
-		return s.client.UploadFile(ctx, cardID, text(args, "filePath"), text(args, "name"))
-	case "attach_data_to_card", "attach_image_data_to_card":
-		cardID := text(args, "cardId")
-		if err := s.ensureCardAllowed(ctx, cardID); err != nil {
-			return nil, err
-		}
-		key := "data"
-		if name == "attach_image_data_to_card" {
-			key = "imageData"
-		}
-		decoded, err := base64.StdEncoding.DecodeString(text(args, key))
-		if err != nil {
-			return nil, fmt.Errorf("decode %s: %w", key, err)
-		}
-		return s.client.UploadData(ctx, cardID, text(args, "name"), decoded)
-	case "list_boards":
-		result, err := s.client.Do(ctx, http.MethodGet, "/members/me/boards", map[string]any{"filter": "open", "fields": "id,name,desc,closed,url,idOrganization"}, nil)
-		if err != nil {
-			return nil, err
-		}
-		return s.filterObjectsByWorkspace(result, "idOrganization"), nil
-	case "set_active_board":
-		boardID := text(args, "boardId")
-		if err := s.client.EnsureBoardAllowed(ctx, boardID); err != nil {
-			return nil, err
-		}
-		board, err := s.client.Do(ctx, http.MethodGet, "/boards/"+escape(boardID), map[string]any{"fields": "id,name,desc,url,idOrganization"}, nil)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.persistBoard(boardID); err != nil {
-			return nil, err
-		}
-		return board, nil
-	case "list_workspaces":
-		result, err := s.client.Do(ctx, http.MethodGet, "/members/me/organizations", map[string]any{"fields": "id,displayName,name,desc,url"}, nil)
-		if err != nil {
-			return nil, err
-		}
-		return s.filterObjectsByWorkspace(result, "id"), nil
+		return s.write(ctx, http.MethodPut, "/lists/"+escape(listID), mapArgs(args, map[string]string{
+			"name": "name", "position": "pos", "closed": "closed", "subscribed": "subscribed",
+		}), nil)
 	case "create_board":
 		workspaceID, err := s.workspaceID(args)
 		if err != nil {
@@ -164,46 +98,15 @@ func (s *Server) handle(ctx context.Context, name string, args map[string]any) (
 		}
 		params := map[string]any{"name": text(args, "name"), "idOrganization": workspaceID, "defaultLists": boolean(args, "defaultLists", true)}
 		copyArg(params, "desc", args, "description")
-		return s.client.Do(ctx, http.MethodPost, "/boards", params, nil)
-	case "set_active_workspace":
-		workspaceID := text(args, "workspaceId")
-		if err := s.client.RequireWorkspaceAllowed(workspaceID); err != nil {
-			return nil, err
-		}
-		workspace, err := s.client.Do(ctx, http.MethodGet, "/organizations/"+escape(workspaceID), map[string]any{"fields": "id,displayName,name,desc,url"}, nil)
-		if err != nil {
-			return nil, err
-		}
-		if err := s.persistWorkspace(workspaceID); err != nil {
-			return nil, err
-		}
-		return workspace, nil
-	case "list_boards_in_workspace":
-		workspaceID := text(args, "workspaceId")
-		if err := s.client.RequireWorkspaceAllowed(workspaceID); err != nil {
-			return nil, err
-		}
-		return s.client.Do(ctx, http.MethodGet, "/organizations/"+escape(workspaceID)+"/boards", map[string]any{"filter": "open", "fields": "id,name,desc,closed,url,idOrganization"}, nil)
-	case "get_active_board_info":
-		boardID, err := s.board(ctx, nil)
-		if err != nil {
-			return nil, err
-		}
-		return s.client.Do(ctx, http.MethodGet, "/boards/"+escape(boardID), map[string]any{"fields": "id,name,desc,closed,url,idOrganization"}, nil)
-	case "get_card":
-		return s.getCard(ctx, text(args, "cardId"), getCardOptions{
-			detailLevel:     textDefault(args, "detailLevel", "compact"),
-			commentsLimit:   integer(args, "commentsLimit", 10),
-			format:          textDefault(args, "format", "markdown"),
-			delivery:        textDefault(args, "delivery", "auto"),
-			includeMarkdown: boolean(args, "includeMarkdown", false),
-		})
+		return s.write(ctx, http.MethodPost, "/boards", params, nil)
+	case "set_active":
+		return s.setActive(ctx, text(args, "boardId"), text(args, "workspaceId"))
 	case "add_comment":
-		cardID := text(args, "cardId")
-		if err := s.ensureCardAllowed(ctx, cardID); err != nil {
+		cardID, err := s.allowedCard(ctx, args, "cardId")
+		if err != nil {
 			return nil, err
 		}
-		return s.client.Do(ctx, http.MethodPost, "/cards/"+escape(cardID)+"/actions/comments", map[string]any{"text": text(args, "text")}, nil)
+		return s.write(ctx, http.MethodPost, "/cards/"+escape(cardID)+"/actions/comments", map[string]any{"text": linkAttachments(text(args, "text"))}, nil)
 	case "update_comment", "delete_comment":
 		commentID := text(args, "commentId")
 		if err := s.ensureActionAllowed(ctx, commentID); err != nil {
@@ -211,170 +114,90 @@ func (s *Server) handle(ctx context.Context, name string, args map[string]any) (
 		}
 		method, params := http.MethodDelete, map[string]any(nil)
 		if name == "update_comment" {
-			method, params = http.MethodPut, map[string]any{"text": text(args, "text")}
+			method, params = http.MethodPut, map[string]any{"text": linkAttachments(text(args, "text"))}
 		}
-		return s.client.Do(ctx, method, "/actions/"+escape(commentID)+"/comments", params, nil)
-	case "get_card_comments":
-		cardID := text(args, "cardId")
-		if err := s.ensureCardAllowed(ctx, cardID); err != nil {
-			return nil, err
-		}
-		comments, err := s.client.Do(ctx, http.MethodGet, "/cards/"+escape(cardID)+"/actions", map[string]any{
-			"filter": "commentCard", "limit": integer(args, "limit", 10),
-			"fields": "id,idMemberCreator,data,type,date",
-		}, nil)
-		if err != nil {
-			return nil, err
-		}
-		return compactComments(comments), nil
+		return s.write(ctx, method, "/actions/"+escape(commentID)+"/comments", params, nil)
 	case "create_checklist":
-		cardID := text(args, "cardId")
-		if err := s.ensureCardAllowed(ctx, cardID); err != nil {
-			return nil, err
-		}
-		params := map[string]any{"name": text(args, "name")}
-		copyArg(params, "pos", args, "position")
-		return s.client.Do(ctx, http.MethodPost, "/cards/"+escape(cardID)+"/checklists", params, nil)
-	case "get_checklist_items", "get_checklist_by_name", "get_acceptance_criteria":
-		checklistName := text(args, "name")
-		if name == "get_acceptance_criteria" {
-			checklistName = "Acceptance Criteria"
-		}
-		checklist, err := s.findChecklist(ctx, checklistName, text(args, "cardId"), text(args, "boardId"))
-		if err != nil {
-			return nil, err
-		}
-		if name == "get_checklist_items" || name == "get_acceptance_criteria" {
-			return checklist["checkItems"], nil
-		}
-		return checklist, nil
+		return s.createChecklist(ctx, args)
 	case "add_checklist_item":
 		checklistID := text(args, "checklistId")
 		if err := s.ensureChecklistAllowed(ctx, checklistID); err != nil {
 			return nil, err
 		}
-		return s.client.Do(ctx, http.MethodPost, "/checklists/"+escape(checklistID)+"/checkItems", mapArgs(args, map[string]string{
-			"name": "name", "checked": "checked", "position": "pos", "due": "due", "dueReminder": "dueReminder", "memberId": "idMember",
-		}), nil)
-	case "find_checklist_items_by_description":
-		return s.findChecklistItems(ctx, text(args, "description"), text(args, "cardId"), text(args, "boardId"))
+		params := mapArgs(args, map[string]string{"name": "name", "checked": "checked", "position": "pos", "due": "due", "dueReminder": "dueReminder"})
+		if member := text(args, "member"); member != "" {
+			memberID, err := s.checklistRefs(checklistID).id(ctx, "members", member)
+			if err != nil {
+				return nil, err
+			}
+			params["idMember"] = memberID
+		}
+		return s.write(ctx, http.MethodPost, "/checklists/"+escape(checklistID)+"/checkItems", params, nil)
 	case "update_checklist_item":
-		cardID := text(args, "cardId")
-		if err := s.ensureCardAllowed(ctx, cardID); err != nil {
+		cardID, err := s.allowedCard(ctx, args, "cardId")
+		if err != nil {
 			return nil, err
 		}
-		return s.client.Do(ctx, http.MethodPut, "/cards/"+escape(cardID)+"/checkItem/"+escape(text(args, "checkItemId")), mapArgs(args, map[string]string{
-			"name": "name", "state": "state", "position": "pos", "due": "due", "dueReminder": "dueReminder", "memberId": "idMember",
-		}), nil)
+		params := mapArgs(args, map[string]string{"name": "name", "position": "pos", "due": "due", "dueReminder": "dueReminder"})
+		if checked, ok := args["checked"].(bool); ok {
+			params["state"] = "incomplete"
+			if checked {
+				params["state"] = "complete"
+			}
+		}
+		if _, exists := args["member"]; exists {
+			params["idMember"] = ""
+			if member := text(args, "member"); member != "" {
+				if params["idMember"], err = s.cardRefs(cardID).id(ctx, "members", member); err != nil {
+					return nil, err
+				}
+			}
+		}
+		return s.write(ctx, http.MethodPut, "/cards/"+escape(cardID)+"/checkItem/"+escape(text(args, "checkItemId")), params, nil)
 	case "delete_checklist_item":
 		checklistID := text(args, "checklistId")
 		if err := s.ensureChecklistAllowed(ctx, checklistID); err != nil {
 			return nil, err
 		}
-		return s.client.Do(ctx, http.MethodDelete, "/checklists/"+escape(checklistID)+"/checkItems/"+escape(text(args, "checkItemId")), nil, nil)
-	case "get_board_members":
-		boardID, err := s.board(ctx, args)
-		if err != nil {
-			return nil, err
-		}
-		return s.client.Do(ctx, http.MethodGet, "/boards/"+escape(boardID)+"/members", map[string]any{"fields": "id,fullName,username,initials,avatarUrl"}, nil)
-	case "assign_member_to_card", "remove_member_from_card":
-		cardID := text(args, "cardId")
-		if err := s.ensureCardAllowed(ctx, cardID); err != nil {
-			return nil, err
-		}
-		memberID := text(args, "memberId")
-		if name == "assign_member_to_card" {
-			return s.client.Do(ctx, http.MethodPost, "/cards/"+escape(cardID)+"/idMembers", map[string]any{"value": memberID}, nil)
-		}
-		return s.client.Do(ctx, http.MethodDelete, "/cards/"+escape(cardID)+"/idMembers/"+escape(memberID), nil, nil)
-	case "get_board_labels":
-		boardID, err := s.board(ctx, args)
-		if err != nil {
-			return nil, err
-		}
-		return s.client.Do(ctx, http.MethodGet, "/boards/"+escape(boardID)+"/labels", map[string]any{"limit": 1000, "fields": "id,name,color,idBoard,uses"}, nil)
+		return s.write(ctx, http.MethodDelete, "/checklists/"+escape(checklistID)+"/checkItems/"+escape(text(args, "checkItemId")), nil, nil)
 	case "create_label":
 		boardID, err := s.board(ctx, args)
 		if err != nil {
 			return nil, err
 		}
-		return s.client.Do(ctx, http.MethodPost, "/labels", map[string]any{"idBoard": boardID, "name": text(args, "name"), "color": text(args, "color")}, nil)
-	case "update_label":
-		if err := s.ensureLabelAllowed(ctx, text(args, "labelId")); err != nil {
+		return s.write(ctx, http.MethodPost, "/labels", map[string]any{"idBoard": boardID, "name": text(args, "name"), "color": text(args, "color")}, nil)
+	case "update_label", "delete_label":
+		labelID := text(args, "labelId")
+		if err := s.ensureLabelAllowed(ctx, labelID); err != nil {
 			return nil, err
 		}
-		return s.client.Do(ctx, http.MethodPut, "/labels/"+escape(text(args, "labelId")), mapArgs(args, map[string]string{"name": "name", "color": "color"}), nil)
-	case "delete_label":
-		if err := s.ensureLabelAllowed(ctx, text(args, "labelId")); err != nil {
-			return nil, err
+		if name == "delete_label" {
+			return s.write(ctx, http.MethodDelete, "/labels/"+escape(labelID), nil, nil)
 		}
-		return s.client.Do(ctx, http.MethodDelete, "/labels/"+escape(text(args, "labelId")), nil, nil)
-	case "copy_card":
-		listID := text(args, "listId")
-		if err := s.ensureListAllowed(ctx, listID); err != nil {
-			return nil, err
-		}
-		if err := s.ensureCardAllowed(ctx, text(args, "sourceCardId")); err != nil {
-			return nil, err
-		}
-		params := mapArgs(args, map[string]string{"sourceCardId": "idCardSource", "listId": "idList", "name": "name", "position": "pos"})
-		if values, ok := args["keepFromSource"].([]any); ok {
-			parts := make([]string, 0, len(values))
-			for _, value := range values {
-				parts = append(parts, fmt.Sprint(value))
-			}
-			params["keepFromSource"] = strings.Join(parts, ",")
-		}
-		return s.client.Do(ctx, http.MethodPost, "/cards", params, nil)
-	case "copy_checklist":
-		cardID := text(args, "cardId")
-		if err := s.ensureCardAllowed(ctx, cardID); err != nil {
-			return nil, err
-		}
-		if err := s.ensureChecklistAllowed(ctx, text(args, "sourceChecklistId")); err != nil {
-			return nil, err
-		}
-		return s.client.Do(ctx, http.MethodPost, "/checklists", mapArgs(args, map[string]string{
-			"sourceChecklistId": "idChecklistSource", "cardId": "idCard", "name": "name", "position": "pos",
-		}), nil)
-	case "add_cards_to_list":
-		return s.addCards(ctx, text(args, "listId"), args["cards"].([]any))
-	case "get_board_custom_fields":
-		boardID, err := s.board(ctx, args)
-		if err != nil {
-			return nil, err
-		}
-		return s.client.Do(ctx, http.MethodGet, "/boards/"+escape(boardID)+"/customFields", nil, nil)
-	case "update_card_custom_field":
-		return s.updateCustomField(ctx, args)
-	case "get_card_history":
-		cardID := text(args, "cardId")
-		if err := s.ensureCardAllowed(ctx, cardID); err != nil {
-			return nil, err
-		}
-		return s.client.Do(ctx, http.MethodGet, "/cards/"+escape(cardID)+"/actions", map[string]any{"filter": "all", "limit": integer(args, "limit", 100)}, nil)
-	case "download_attachment":
-		cardID := text(args, "cardId")
-		if err := s.ensureCardAllowed(ctx, cardID); err != nil {
-			return nil, err
-		}
-		return s.client.DownloadAttachment(ctx, cardID, text(args, "attachmentId"), text(args, "destinationPath"))
-	case "get_health":
-		return s.health(ctx, false)
-	case "get_health_detailed":
-		return s.health(ctx, true)
-	case "get_health_metadata":
-		return s.healthMetadata()
-	case "get_health_performance":
-		start := time.Now()
-		_, err := s.client.Do(ctx, http.MethodGet, "/members/me", map[string]any{"fields": "id"}, nil)
-		return map[string]any{"ok": err == nil, "latency_ms": time.Since(start).Milliseconds(), "error": errorText(err)}, nil
-	case "perform_system_repair":
-		return s.repair()
+		return s.write(ctx, http.MethodPut, "/labels/"+escape(labelID), mapArgs(args, map[string]string{"name": "name", "color": "color"}), nil)
+	case "add_attachment":
+		return s.addAttachment(ctx, args)
 	default:
 		return nil, fmt.Errorf("tool %q is not implemented", name)
 	}
+}
+
+// allowedCard normalizes a card reference argument and applies the workspace
+// allow-list.
+func (s *Server) allowedCard(ctx context.Context, args map[string]any, key string) (string, error) {
+	cardID, err := normalizeCardRef(text(args, key))
+	if err != nil {
+		return "", err
+	}
+	return cardID, s.ensureCardAllowed(ctx, cardID)
+}
+
+func joinValues(values []any) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, fmt.Sprint(value))
+	}
+	return strings.Join(parts, ",")
 }
 
 func (s *Server) board(ctx context.Context, args map[string]any) (string, error) {
@@ -403,11 +226,32 @@ func (s *Server) workspaceID(args map[string]any) (string, error) {
 	return workspaceID, nil
 }
 
-func (s *Server) updateCardFlag(ctx context.Context, cardID, field string, value any) (any, error) {
-	if err := s.ensureCardAllowed(ctx, cardID); err != nil {
+// write calls a mutating endpoint and returns a short ack instead of the full
+// Trello object, which can run to several KiB; get_card has the full view.
+func (s *Server) write(ctx context.Context, method, path string, params map[string]any, body any) (any, error) {
+	return acked(s.client.Do(ctx, method, path, params, body))
+}
+
+func acked(value any, err error) (any, error) {
+	if err != nil {
 		return nil, err
 	}
-	return s.client.Do(ctx, http.MethodPut, "/cards/"+escape(cardID), map[string]any{field: value}, nil)
+	object, ok := value.(map[string]any)
+	if !ok {
+		return value, nil
+	}
+	result := make(map[string]any)
+	copyPresent(result, object, "id", "name", "shortUrl", "idList", "due", "start", "dueComplete", "dueReminder", "closed", "state", "color", "value", "date")
+	if _, ok := result["shortUrl"]; !ok {
+		copyPresent(result, object, "url")
+	}
+	if items, ok := object["checkItems"]; ok {
+		result["checkItems"] = compactObjects(items, "id", "name", "state")
+	}
+	if len(result) == 0 {
+		return map[string]any{"ok": true}, nil
+	}
+	return result, nil
 }
 
 func (s *Server) workspaceRestrictionsEnabled() (bool, error) {
@@ -544,21 +388,6 @@ func copyArg(target map[string]any, output string, args map[string]any, input st
 func escape(value string) string { return url.PathEscape(value) }
 
 func nestedString(value any, path ...string) string {
-	current := value
-	for _, name := range path {
-		object, ok := current.(map[string]any)
-		if !ok {
-			return ""
-		}
-		current = object[name]
-	}
-	result, _ := current.(string)
+	result, _ := nestedValue(value, path...).(string)
 	return result
-}
-
-func errorText(err error) any {
-	if err == nil {
-		return nil
-	}
-	return err.Error()
 }

@@ -52,6 +52,10 @@ func TestGetCardCompactUsesOneDirectRequest(t *testing.T) {
 	requests := 0
 	server, _ := testServer(t, nil, func(w http.ResponseWriter, r *http.Request) {
 		requests++
+		if r.URL.Path == "/boards/board-1/customFields" {
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": "field-1", "name": "Priority", "type": "text"}})
+			return
+		}
 		if r.Method != http.MethodGet || r.URL.Path != "/cards/7yNeeFiE" {
 			http.NotFound(w, r)
 			return
@@ -77,6 +81,7 @@ func TestGetCardCompactUsesOneDirectRequest(t *testing.T) {
 			"name":      "Card name",
 			"desc":      "Card description",
 			"closed":    false,
+			"list":      map[string]any{"id": "list-1", "name": "Doing"},
 			"url":       "https://trello.com/c/7yNeeFiE/card-name",
 			"cover":     map[string]any{"scaled": []any{"large preview data"}},
 			"labels": []any{
@@ -121,43 +126,30 @@ func TestGetCardCompactUsesOneDirectRequest(t *testing.T) {
 
 	result, err := server.handle(context.Background(), "get_card", map[string]any{
 		"cardId": "https://trello.com/c/7yNeeFiE/430-card-name",
-		"format": "json",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if requests != 1 {
-		t.Fatalf("Trello request count = %d, want 1", requests)
+	if requests != 2 {
+		t.Fatalf("Trello request count = %d, want 2 (card, custom field definitions)", requests)
 	}
-	card, ok := result.(map[string]any)
+	markdown, ok := result.(rawTextResult)
 	if !ok {
-		t.Fatalf("result type = %T, want map[string]any", result)
+		t.Fatalf("result type = %T, want rawTextResult", result)
 	}
-	if nestedString(card, "shortLink") != "7yNeeFiE" {
-		t.Fatalf("unexpected card: %#v", card)
-	}
-	for _, dropped := range []string{"cover", "actions"} {
-		if _, exists := card[dropped]; exists {
-			t.Errorf("compact card contains %q", dropped)
+	for _, want := range []string{
+		"# Card name", "- List: Doing", "- Labels: Urgent", "- Members: Test User (@test)", "- Priority: High",
+		"## Acceptance Criteria (checklist checklist-1)", "- [ ] Works (item item-1)",
+		"- [spec.pdf](https://example.test/spec.pdf) (attachment attachment-1)",
+		"### Test User (@test), 2026-07-23T00:00:00.000Z (comment action-1)", "A useful comment",
+	} {
+		if !strings.Contains(string(markdown), want) {
+			t.Errorf("Markdown is missing %q:\n%s", want, markdown)
 		}
 	}
-	attachments := objectSlice(card["attachments"])
-	if len(attachments) != 1 {
-		t.Fatalf("attachments = %#v", attachments)
-	}
-	if _, exists := attachments[0]["previews"]; exists {
-		t.Error("compact attachment contains previews")
-	}
-	comments := objectSlice(card["comments"])
-	if len(comments) != 1 || nestedString(comments[0], "text") != "A useful comment" {
-		t.Fatalf("comments = %#v", comments)
-	}
-	if nestedString(comments[0], "author", "username") != "test" {
-		t.Fatalf("compact comment author = %#v", comments[0]["author"])
-	}
-	for _, dropped := range []string{"data", "display", "memberCreator"} {
-		if _, exists := comments[0][dropped]; exists {
-			t.Errorf("compact comment contains %q", dropped)
+	for _, dropped := range []string{"large preview data", "duplicated", "avatar"} {
+		if strings.Contains(string(markdown), dropped) {
+			t.Errorf("Markdown contains %q", dropped)
 		}
 	}
 }
@@ -214,68 +206,12 @@ func TestGetCardDefaultsToMarkdownAutoInline(t *testing.T) {
 	}
 }
 
-func TestGetCardCommentsUsesOneCompactRequest(t *testing.T) {
-	requests := 0
-	server, _ := testServer(t, nil, func(w http.ResponseWriter, r *http.Request) {
-		requests++
-		if r.URL.Path != "/cards/card-1/actions" {
-			http.NotFound(w, r)
-			return
-		}
-		if got := r.URL.Query().Get("limit"); got != "10" {
-			t.Errorf("limit = %q, want 10", got)
-		}
-		if got := r.URL.Query().Get("fields"); got != "id,idMemberCreator,data,type,date" {
-			t.Errorf("fields = %q", got)
-		}
-		_ = json.NewEncoder(w).Encode([]any{
-			map[string]any{
-				"id": "action-1", "idMemberCreator": "member-1", "date": "2026-07-23T00:00:00.000Z",
-				"data": map[string]any{
-					"text": "Compact me", "card": map[string]any{"id": "duplicated-card"},
-				},
-				"memberCreator": map[string]any{
-					"id": "member-1", "fullName": "Test User", "username": "test", "avatarUrl": "drop",
-				},
-				"display": map[string]any{"translationKey": "drop"},
-			},
-		})
-	})
-
-	result, err := server.handle(context.Background(), "get_card_comments", map[string]any{
-		"cardId": "card-1",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if requests != 1 {
-		t.Fatalf("Trello request count = %d, want 1", requests)
-	}
-	comments, ok := result.([]any)
-	if !ok || len(comments) != 1 {
-		t.Fatalf("comments = %#v", result)
-	}
-	comment := comments[0].(map[string]any)
-	if nestedString(comment, "text") != "Compact me" || nestedString(comment, "author", "username") != "test" {
-		t.Fatalf("compact comment = %#v", comment)
-	}
-	if _, exists := comment["data"]; exists {
-		t.Fatal("compact comment contains raw action data")
-	}
-}
-
 func TestDeliverCardModes(t *testing.T) {
-	card := map[string]any{
-		"id":        "card-1",
-		"shortLink": "short-1",
-		"name":      "Delivery card",
-		"desc":      "Useful details",
-		"url":       "https://trello.com/c/short-1",
-	}
+	card := "# Delivery card\n\nUseful details"
 
 	t.Run("inline", func(t *testing.T) {
 		result, err := deliverCard("card-1", card, getCardOptions{
-			format: "markdown", delivery: "inline", fileThreshold: 1,
+			delivery: "inline", fileThreshold: 1,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -287,7 +223,7 @@ func TestDeliverCardModes(t *testing.T) {
 
 	t.Run("auto inline below threshold", func(t *testing.T) {
 		result, err := deliverCard("card-1", card, getCardOptions{
-			format: "markdown", delivery: "auto", fileThreshold: 1 << 20,
+			delivery: "auto", fileThreshold: 1 << 20,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -300,7 +236,7 @@ func TestDeliverCardModes(t *testing.T) {
 	t.Run("auto file above threshold", func(t *testing.T) {
 		outputDir := filepath.Join(t.TempDir(), "outputs")
 		result, err := deliverCard("card-1", card, getCardOptions{
-			format: "markdown", delivery: "auto", fileThreshold: 1, outputDir: outputDir,
+			delivery: "auto", fileThreshold: 1, outputDir: outputDir,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -357,5 +293,34 @@ func TestGetCardRejectsInvalidOptionsBeforeCallingTrello(t *testing.T) {
 	}
 	if requests != 0 {
 		t.Fatalf("Trello request count = %d, want 0", requests)
+	}
+}
+
+func TestGetCardNamesChecklistAssigneesFromTheBoard(t *testing.T) {
+	server, _ := testServer(t, nil, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cards/card-1":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"idBoard": "board-1", "name": "Card",
+				"checklists": []any{map[string]any{"id": "cl-1", "name": "Tasks", "checkItems": []any{
+					map[string]any{"id": "item-1", "name": "Ship", "state": "incomplete", "idMember": "member-anna"},
+					map[string]any{"id": "item-2", "name": "Test", "state": "incomplete", "idMember": "member-gone"},
+				}}},
+			})
+		case "/boards/board-1/members":
+			_ = json.NewEncoder(w).Encode([]any{map[string]any{"id": "member-anna", "fullName": "Anna"}})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	result, err := server.handle(context.Background(), "get_card", map[string]any{"cardId": "card-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	markdown := string(result.(rawTextResult))
+	for _, want := range []string{"- [ ] Ship (item item-1, assigned Anna)", "- [ ] Test (item item-2, assigned member member-gone)"} {
+		if !strings.Contains(markdown, want) {
+			t.Errorf("Markdown is missing %q:\n%s", want, markdown)
+		}
 	}
 }

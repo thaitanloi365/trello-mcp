@@ -384,7 +384,7 @@ func (c *Client) DownloadAttachment(ctx context.Context, cardID, attachmentID, d
 	if err := os.Chmod(absDestination, 0o600); err != nil {
 		return nil, fmt.Errorf("secure attachment: %w", err)
 	}
-	return map[string]any{"ok": true, "path": absDestination, "bytes": written, "attachment": metadata}, nil
+	return map[string]any{"path": absDestination, "bytes": written, "name": fileName}, nil
 }
 
 func (c *Client) upload(ctx context.Context, cfg config.Config, cardID, name string, source io.Reader, size int64) (any, error) {
