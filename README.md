@@ -150,6 +150,10 @@ alias trello-mcp='/absolute/path/to/trello-mcp/bin/trello-mcp'
 alias trello-mcp-dev='/absolute/path/to/trello-mcp/scripts/trello-mcp-dev'
 ```
 
+Update with `trello-mcp update`: it runs `git pull --ff-only` in the source
+checkout and rebuilds `bin/trello-mcp` in place. Use `--no-pull` to rebuild
+local changes only. Restart MCP clients afterwards to load the new binary.
+
 Reload zsh with `source ~/.zshrc`. For a no-rebuild project integration, run:
 
 ```bash

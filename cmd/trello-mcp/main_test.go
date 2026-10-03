@@ -285,3 +285,18 @@ func TestConfigShowMasksSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestSourceRoot(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "bin", "trello-mcp")
+	if _, err := sourceRoot(executable); err == nil {
+		t.Fatal("expected error without go.mod")
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module github.com/thaitanloi365/trello-mcp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := sourceRoot(executable)
+	if err != nil || got != root {
+		t.Fatalf("sourceRoot() = %q, %v; want %q", got, err, root)
+	}
+}

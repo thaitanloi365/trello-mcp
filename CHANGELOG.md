@@ -43,6 +43,8 @@ calls in prompts and skills that use the old names.
 ### Added
 
 - `update_card` adds and removes labels, which no tool could do before.
+- `trello-mcp update` pulls the latest source (`git pull --ff-only`) and
+  rebuilds `bin/trello-mcp` in place; `--no-pull` skips the pull.
 - `draft_reply` MCP prompt that drafts a card reply and posts it only after
   approval.
 - Comments rewrite bare Trello attachment URLs to `[file name](url)` links.

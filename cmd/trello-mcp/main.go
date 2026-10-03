@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -63,6 +64,7 @@ func newRootCommand(stdout, stderr io.Writer) *cobra.Command {
 		newConfigCommand(&configPath),
 		newClientConfigCommand(&configPath),
 		newSetupCommand(&configPath),
+		newUpdateCommand(),
 		newVersionCommand(),
 	)
 	return root
@@ -405,6 +407,60 @@ func resolveClientOptions(commandPath, configPath string) (clientconfig.Options,
 		}
 	}
 	return clientconfig.Options{Command: absoluteCommand, ConfigPath: resolvedConfig}, nil
+}
+
+func newUpdateCommand() *cobra.Command {
+	var noPull bool
+	cmd := &cobra.Command{
+		Use:   "update",
+		Short: "Pull the latest source and rebuild this binary",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			executable, err := os.Executable()
+			if err != nil {
+				return fmt.Errorf("resolve trello-mcp executable: %w", err)
+			}
+			if executable, err = filepath.EvalSymlinks(executable); err != nil {
+				return fmt.Errorf("resolve trello-mcp executable: %w", err)
+			}
+			root, err := sourceRoot(executable)
+			if err != nil {
+				return err
+			}
+			if !noPull {
+				pull := exec.CommandContext(cmd.Context(), "git", "pull", "--ff-only")
+				pull.Dir = root
+				pull.Stdout, pull.Stderr = cmd.OutOrStdout(), cmd.ErrOrStderr()
+				if err := pull.Run(); err != nil {
+					return fmt.Errorf("git pull --ff-only in %s: %w; use --no-pull to rebuild the current checkout", root, err)
+				}
+			}
+			build := exec.CommandContext(cmd.Context(), "go", "build", "-trimpath", "-o", executable, "./cmd/trello-mcp")
+			build.Dir = root
+			build.Stdout, build.Stderr = cmd.OutOrStdout(), cmd.ErrOrStderr()
+			if err := build.Run(); err != nil {
+				return fmt.Errorf("go build: %w", err)
+			}
+			version, err := exec.CommandContext(cmd.Context(), executable, "version").Output()
+			if err != nil {
+				return fmt.Errorf("check rebuilt binary: %w", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "updated %s to %s", executable, version)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&noPull, "no-pull", false, "rebuild the current checkout without pulling")
+	return cmd
+}
+
+// sourceRoot returns the checkout that holds executable at <root>/bin/.
+func sourceRoot(executable string) (string, error) {
+	root := filepath.Dir(filepath.Dir(executable))
+	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil || !strings.HasPrefix(string(data), "module github.com/thaitanloi365/trello-mcp\n") {
+		return "", fmt.Errorf("%s is not in a trello-mcp source checkout's bin/; reinstall with `go install github.com/thaitanloi365/trello-mcp/cmd/trello-mcp@latest` or `brew upgrade trello-mcp`", executable)
+	}
+	return root, nil
 }
 
 func newVersionCommand() *cobra.Command {
