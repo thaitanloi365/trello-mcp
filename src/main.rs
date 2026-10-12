@@ -1,3 +1,4 @@
+mod clientconfig;
 mod config;
 mod mcp;
 mod trello;
