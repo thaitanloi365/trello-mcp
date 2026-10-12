@@ -9,7 +9,7 @@ and the config file are unchanged.
 
 Upgrading from 1.x: the Go binary's `update` cannot build the Rust source.
 Run once from the checkout:
-`cargo build --release --locked && cp target/release/trello-mcp bin/trello-mcp`.
+`cargo build --release --locked && mkdir -p bin && install -m 0755 target/release/trello-mcp bin/trello-mcp`.
 
 ### Rust rewrite
 
