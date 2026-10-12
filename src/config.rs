@@ -102,13 +102,33 @@ fn default_path() -> Result<PathBuf, Error> {
 }
 
 fn expand_home(path: &str) -> Result<PathBuf, Error> {
-    if path == "~" {
-        return home_dir();
+    if path == "~" || path.starts_with("~/") {
+        return expand_home_with(path, &home_dir()?);
     }
-    if let Some(rest) = path.strip_prefix("~/") {
-        return Ok(home_dir()?.join(rest));
-    }
-    util::absolute(Path::new(path)).map_err(|e| io_error("resolve path", e))
+    expand_home_with(path, Path::new(""))
+}
+
+// Core of expand_home with a known home; `~` forms behave like Go filepath.Join (cleaned).
+fn expand_home_with(path: &str, home: &Path) -> Result<PathBuf, Error> {
+    let rest = if path == "~" {
+        ""
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        rest.trim_start_matches('/')
+    } else {
+        return util::absolute(Path::new(path)).map_err(|e| io_error("resolve path", e));
+    };
+    util::absolute(&home.join(rest)).map_err(|e| io_error("resolve path", e))
+}
+
+fn parse_int(func: &str, value: &str) -> Result<i64, String> {
+    use std::num::IntErrorKind::{NegOverflow, PosOverflow};
+    value.parse::<i64>().map_err(|e| {
+        let reason = match e.kind() {
+            PosOverflow | NegOverflow => "value out of range",
+            _ => "invalid syntax",
+        };
+        format!("{func}: parsing {value:?}: {reason}")
+    })
 }
 
 /// Uses the supplied path when non-empty, otherwise the default path.
@@ -223,15 +243,11 @@ pub fn apply_environment(mut cfg: Config, env: &Env) -> Result<Config, Error> {
         cfg.allowed_workspace_ids = split_and_clean(&value);
     }
     if let Some(value) = env("TRELLO_REQUEST_TIMEOUT_SECONDS") {
-        cfg.request_timeout_seconds = value
-            .trim()
-            .parse()
+        cfg.request_timeout_seconds = parse_int("strconv.Atoi", value.trim())
             .map_err(|e| Error::Invalid(format!("parse TRELLO_REQUEST_TIMEOUT_SECONDS: {e}")))?;
     }
     if let Some(value) = env("TRELLO_MAX_UPLOAD_BYTES") {
-        cfg.max_upload_bytes = value
-            .trim()
-            .parse()
+        cfg.max_upload_bytes = parse_int("strconv.ParseInt", value.trim())
             .map_err(|e| Error::Invalid(format!("parse TRELLO_MAX_UPLOAD_BYTES: {e}")))?;
     }
     cfg.normalize();
@@ -414,6 +430,45 @@ mod tests {
         assert_eq!(
             bad.validate(false).unwrap_err().to_string(),
             "api_base_url must start with http:// or https://"
+        );
+    }
+
+    #[test]
+    fn expand_home_matches_go_join() {
+        let home = Path::new("/h");
+        for (input, want) in [
+            ("~", "/h"),
+            ("~/x", "/h/x"),
+            ("~//x", "/h/x"),
+            ("~/a/../b", "/h/b"),
+            ("~/", "/h"),
+        ] {
+            assert_eq!(
+                expand_home_with(input, home).unwrap(),
+                Path::new(want),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn env_parse_errors_match_go_strconv() {
+        let e = |k: &str, v: &str| {
+            apply_environment(Config::default(), &env_of(&[(k, v)]))
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            e("TRELLO_REQUEST_TIMEOUT_SECONDS", "x"),
+            "parse TRELLO_REQUEST_TIMEOUT_SECONDS: strconv.Atoi: parsing \"x\": invalid syntax"
+        );
+        assert_eq!(
+            e("TRELLO_MAX_UPLOAD_BYTES", "99999999999999999999"),
+            "parse TRELLO_MAX_UPLOAD_BYTES: strconv.ParseInt: parsing \"99999999999999999999\": value out of range"
+        );
+        assert_eq!(
+            e("TRELLO_MAX_UPLOAD_BYTES", ""),
+            "parse TRELLO_MAX_UPLOAD_BYTES: strconv.ParseInt: parsing \"\": invalid syntax"
         );
     }
 }
