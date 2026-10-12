@@ -1,6 +1,6 @@
 //! Board index, name-to-ID resolution, and list_cards.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 
 use reqwest::Method;
 use serde_json::{Value, json};
@@ -287,9 +287,9 @@ impl Server {
         let cards = object_slice(&raw);
         for card in &cards {
             let board_id = field(card, "idBoard");
-            if !indexes.contains_key(&board_id) {
-                let index = self.board_index(&board_id).await?;
-                indexes.insert(board_id, index);
+            if let Entry::Vacant(slot) = indexes.entry(board_id) {
+                let index = self.board_index(slot.key()).await?;
+                slot.insert(index);
             }
         }
         let empty = Args::new();
