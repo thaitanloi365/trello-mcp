@@ -294,10 +294,13 @@ card, drafts a reply in that style, and posts it only after you approve.
 ## Development
 
 ```bash
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-make  # build and replace bin/trello-mcp
+make          # build and replace bin/trello-mcp
+make check    # cargo fmt --check, clippy -D warnings, cargo test
+make test     # tests only
+make lint     # fmt check and clippy only
+make fmt      # format the code
+make release VERSION=2.0.0  # macOS archives in dist/release/2.0.0
+make clean    # drop target/; bin/trello-mcp stays
 ```
 
 The Trello client has tests for credential injection, response decoding, and
