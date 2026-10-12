@@ -290,7 +290,7 @@ impl Client {
                 method: Method::GET,
                 path: "/attachments/download".into(),
                 status: status.as_u16(),
-                message: status.canonical_reason().unwrap_or("").to_string(),
+                message: status_text(status),
             });
         }
         let abs = util::absolute(Path::new(destination))
@@ -486,11 +486,22 @@ fn retry_delay(value: &str, attempt: u32) -> Duration {
     }
 }
 
+/// Go http.StatusText wording where it differs from the http crate.
+fn status_text(status: StatusCode) -> String {
+    match status.as_u16() {
+        413 => "Request Entity Too Large",
+        414 => "Request URI Too Long",
+        416 => "Requested Range Not Satisfiable",
+        _ => status.canonical_reason().unwrap_or(""),
+    }
+    .to_string()
+}
+
 fn response_message(data: &[u8], status: StatusCode) -> String {
     let text = String::from_utf8_lossy(data);
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return status.canonical_reason().unwrap_or("").to_string();
+        return status_text(status);
     }
     if let Ok(Value::Object(object)) = serde_json::from_slice::<Value>(data) {
         for key in ["message", "error"] {
@@ -502,7 +513,13 @@ fn response_message(data: &[u8], status: StatusCode) -> String {
         }
     }
     if trimmed.len() > 500 {
-        return format!("{}...", &trimmed[..trimmed.floor_char_boundary(500)]);
+        return format!(
+            "{}...",
+            &trimmed[..(0..=500)
+                .rev()
+                .find(|i| trimmed.is_char_boundary(*i))
+                .unwrap_or(0)]
+        );
     }
     trimmed.to_string()
 }
@@ -674,6 +691,18 @@ mod tests {
         assert!(message.ends_with("..."));
         assert!(message.len() <= 503);
         assert_eq!(response_message(b"", StatusCode::NOT_FOUND), "Not Found");
+        assert_eq!(
+            response_message(b"", StatusCode::PAYLOAD_TOO_LARGE),
+            "Request Entity Too Large"
+        );
+        assert_eq!(
+            response_message(b"", StatusCode::URI_TOO_LONG),
+            "Request URI Too Long"
+        );
+        assert_eq!(
+            response_message(b"", StatusCode::RANGE_NOT_SATISFIABLE),
+            "Requested Range Not Satisfiable"
+        );
         assert_eq!(
             response_message(br#"{"error":"nope"}"#, StatusCode::BAD_REQUEST),
             "nope"
