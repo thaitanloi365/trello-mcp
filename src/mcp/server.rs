@@ -43,10 +43,6 @@ pub(crate) fn input_schema(fields: &[FieldDefinition]) -> Map<String, Value> {
                 };
                 property.insert("items".into(), items);
             }
-            Kind::Object => {
-                property.insert("type".into(), json!("object"));
-                property.insert("additionalProperties".into(), json!(true));
-            }
             kind => {
                 property.insert("type".into(), json!(kind.as_str()));
             }
@@ -108,7 +104,7 @@ fn validate_kind(field: &FieldDefinition, value: &Value) -> Result<(), String> {
     let valid = match field.kind {
         Kind::Str => value.is_string(),
         Kind::Bool => value.is_boolean(),
-        Kind::Number | Kind::Integer => match value.as_f64() {
+        Kind::Integer => match value.as_f64() {
             Some(number) if field.kind == Kind::Integer && number.trunc() != number => {
                 return Err(format!("argument {:?} must be an integer", field.name));
             }
@@ -116,7 +112,6 @@ fn validate_kind(field: &FieldDefinition, value: &Value) -> Result<(), String> {
             None => false,
         },
         Kind::StrArray | Kind::ObjectArray => value.is_array(),
-        Kind::Object => value.is_object(),
     };
     if !valid {
         return Err(format!(

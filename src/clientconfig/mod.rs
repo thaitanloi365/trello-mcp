@@ -6,7 +6,7 @@ use serde::Serialize;
 
 pub mod project;
 
-pub use project::{project_config_path, setup_project};
+pub use project::setup_project;
 
 const CODEX: &str = "codex";
 const CLAUDE_CODE: &str = "claude-code";

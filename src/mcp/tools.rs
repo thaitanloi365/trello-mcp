@@ -8,24 +8,20 @@ use serde_json::{Value, json};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     Str,
-    Number,
     Integer,
     Bool,
     StrArray,
     ObjectArray,
-    Object,
 }
 
 impl Kind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Kind::Str => "string",
-            Kind::Number => "number",
             Kind::Integer => "integer",
             Kind::Bool => "boolean",
             Kind::StrArray => "string_array",
             Kind::ObjectArray => "object_array",
-            Kind::Object => "object",
         }
     }
 }

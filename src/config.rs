@@ -331,10 +331,12 @@ mod tests {
     fn save_load_and_permissions() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("config.json");
-        let mut cfg = Config::default();
-        cfg.api_key = " key ".into();
-        cfg.token = "token".into();
-        cfg.allowed_workspace_ids = vec!["a".into(), " b ".into(), "a".into()];
+        let cfg = Config {
+            api_key: " key ".into(),
+            token: "token".into(),
+            allowed_workspace_ids: vec!["a".into(), " b ".into(), "a".into()],
+            ..Config::default()
+        };
         save(&path, &cfg).unwrap();
         let loaded = load(&path).unwrap();
         assert_eq!(loaded.api_key, "key");
@@ -371,8 +373,10 @@ mod tests {
 
     #[test]
     fn environment_overrides_file() {
-        let mut cfg = Config::default();
-        cfg.api_key = "file-key".into();
+        let cfg = Config {
+            api_key: "file-key".into(),
+            ..Config::default()
+        };
         let env = env_of(&[
             ("TRELLO_API_KEY", "env-key"),
             ("TRELLO_ALLOWED_WORKSPACES", "w1, w2,w1"),
@@ -425,8 +429,10 @@ mod tests {
             cfg.validate(true).unwrap_err().to_string(),
             "Trello credentials are required; run `trello-mcp config set --api-key ... --token ...` or set TRELLO_API_KEY and TRELLO_TOKEN"
         );
-        let mut bad = Config::default();
-        bad.api_base_url = "ftp://x".into();
+        let bad = Config {
+            api_base_url: "ftp://x".into(),
+            ..Config::default()
+        };
         assert_eq!(
             bad.validate(false).unwrap_err().to_string(),
             "api_base_url must start with http:// or https://"

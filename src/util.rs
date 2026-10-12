@@ -79,12 +79,12 @@ fn working_dir() -> io::Result<PathBuf> {
 #[cfg(unix)]
 fn logical_dir(pwd: Option<OsString>) -> io::Result<PathBuf> {
     use std::os::unix::fs::MetadataExt;
-    if let Some(pwd) = pwd.map(PathBuf::from).filter(|pwd| pwd.is_absolute()) {
-        if let (Ok(logical), Ok(physical)) = (std::fs::metadata(&pwd), std::fs::metadata(".")) {
-            if logical.dev() == physical.dev() && logical.ino() == physical.ino() {
-                return Ok(pwd);
-            }
-        }
+    if let Some(pwd) = pwd.map(PathBuf::from).filter(|pwd| pwd.is_absolute())
+        && let (Ok(logical), Ok(physical)) = (std::fs::metadata(&pwd), std::fs::metadata("."))
+        && logical.dev() == physical.dev()
+        && logical.ino() == physical.ino()
+    {
+        return Ok(pwd);
     }
     std::env::current_dir()
 }

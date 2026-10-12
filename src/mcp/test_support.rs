@@ -15,7 +15,7 @@ pub(crate) struct Harness {
     pub server: Server,
     pub manager: Arc<Manager>,
     pub api: MockServer,
-    pub dir: tempfile::TempDir,
+    pub _dir: tempfile::TempDir,
 }
 
 /// Assert on recorded requests after the call, not inside the responder: a
@@ -43,7 +43,7 @@ pub(crate) async fn test_server(
         server: Server::new(Arc::new(Client::new(manager.clone()))),
         manager,
         api,
-        dir,
+        _dir: dir,
     }
 }
 

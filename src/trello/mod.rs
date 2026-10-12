@@ -544,10 +544,12 @@ mod tests {
         Mock::given(any()).respond_with(handler).mount(&api).await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
-        let mut cfg = Config::default();
-        cfg.api_key = "test-key".into();
-        cfg.token = "test-token".into();
-        cfg.api_base_url = api.uri();
+        let cfg = Config {
+            api_key: "test-key".into(),
+            token: "test-token".into(),
+            api_base_url: api.uri(),
+            ..Config::default()
+        };
         config::save(&path, &cfg).unwrap();
         let manager =
             Arc::new(Manager::with_env(path.to_str().unwrap(), config::no_env()).unwrap());
@@ -620,10 +622,12 @@ mod tests {
     async fn transport_error_does_not_leak_credentials() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
-        let mut cfg = Config::default();
-        cfg.api_key = "test-key".into();
-        cfg.token = "test-token".into();
-        cfg.api_base_url = "http://127.0.0.1:9".into(); // discard port: connection refused
+        let cfg = Config {
+            api_key: "test-key".into(),
+            token: "test-token".into(),
+            api_base_url: "http://127.0.0.1:9".into(), // discard port: connection refused
+            ..Config::default()
+        };
         config::save(&path, &cfg).unwrap();
         let client = Client::new(Arc::new(
             Manager::with_env(path.to_str().unwrap(), config::no_env()).unwrap(),
