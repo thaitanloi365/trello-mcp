@@ -297,7 +297,7 @@ card, drafts a reply in that style, and posts it only after you approve.
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
-cargo build --release
+make  # build and replace bin/trello-mcp
 ```
 
 The Trello client has tests for credential injection, response decoding, and

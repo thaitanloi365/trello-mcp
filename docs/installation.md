@@ -102,7 +102,7 @@ Windows).
 git clone https://github.com/thaitanloi365/trello-mcp.git
 cd trello-mcp
 cargo test
-cargo build --release --locked && mkdir -p bin && install -m 0755 target/release/trello-mcp bin/trello-mcp
+make
 ./bin/trello-mcp version
 ```
 
@@ -177,11 +177,11 @@ For a source checkout, pull, retest, and rebuild:
 ```bash
 git pull --ff-only
 cargo test
-cargo build --release --locked && mkdir -p bin && install -m 0755 target/release/trello-mcp bin/trello-mcp
+make
 ```
 
 Upgrading a checkout from 1.x: the Go binary's `update` cannot build the Rust
-source, so run the `cargo build` line above once by hand. `trello-mcp update`
+source, so run `make` once by hand. `trello-mcp update`
 works from then on.
 
 For Homebrew, use the `brew reinstall --HEAD` command shown above.

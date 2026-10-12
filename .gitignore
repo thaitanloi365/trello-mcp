@@ -2,7 +2,5 @@
 artifacts/
 bin/
 dist/
-coverage.out
 .DS_Store
-/trello-mcp
 target/
