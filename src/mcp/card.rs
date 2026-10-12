@@ -404,10 +404,11 @@ fn write_card_output(
     util::absolute(&path).map_err(wrap("resolve Trello MCP output path"))
 }
 
-// Go's 48-character cap never fires (its `break` only leaves the switch), so no truncation.
+// Go stops after 48 output bytes; every output char is one ASCII byte, so take 48 chars.
 fn safe_file_part(value: &str) -> String {
     let cleaned: String = value
         .chars()
+        .take(48)
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
                 c
@@ -814,6 +815,8 @@ mod tests {
     fn safe_file_part_replaces_unsafe_characters() {
         assert_eq!(safe_file_part("abc/../x y"), "abc----x-y");
         assert_eq!(safe_file_part("///"), "card");
+        assert_eq!(safe_file_part(&"a".repeat(60)).len(), 48);
+        assert_eq!(safe_file_part(&("a".repeat(47) + "/b")), "a".repeat(47));
     }
 
     #[cfg(unix)]
