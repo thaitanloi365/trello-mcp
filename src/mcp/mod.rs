@@ -6,6 +6,7 @@ use serde_json::{Map, Value};
 
 use crate::{config, trello, util};
 
+mod board;
 mod server;
 #[cfg(test)]
 pub(crate) mod test_support;
