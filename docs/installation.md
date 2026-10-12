@@ -1,58 +1,47 @@
 # Installing trello-mcp
 
-`trello-mcp` supports macOS, Linux, and Windows. Go 1.26.5 or newer is
-required when installing from Go source. After any installation, verify the
+`trello-mcp` supports macOS, Linux, and Windows. Rust 1.88 or newer is
+required when installing from source. After any installation, verify the
 binary before configuring credentials:
 
 ```text
 trello-mcp version
 ```
 
-The expected version is currently `1.0.0`.
+The expected version is currently `2.0.0`.
 
 ## Choose an installation method
 
 | Method | Platforms | Best for |
 | --- | --- | --- |
-| Release archive | macOS, Linux, Windows | A prebuilt binary without installing Go |
+| Release archive | macOS | A prebuilt binary without installing Rust |
 | Homebrew HEAD formula | macOS, Linux | A Brew-managed installation built from the latest `master` source |
-| `go install` | macOS, Linux, Windows | The shortest cross-platform installation |
+| `cargo install --git` | macOS, Linux, Windows | The shortest cross-platform installation |
 | Source checkout | macOS, Linux, Windows | Development, auditing, and running tests before installation |
 
 The Homebrew formula remains HEAD-only and must be installed with `--HEAD`.
 
 ## Prebuilt release archives
 
-Download `v1.0.0` from the
-[GitHub release page](https://github.com/thaitanloi365/trello-mcp/releases/tag/v1.0.0).
-Choose the archive matching the operating system and CPU:
+Download `v2.0.0` from the
+[GitHub release page](https://github.com/thaitanloi365/trello-mcp/releases/tag/v2.0.0).
+Archives cover macOS only. Linux and Windows build from source with
+`cargo install --git`. Choose the archive matching the CPU:
 
 | Operating system | amd64 | arm64 |
 | --- | --- | --- |
-| macOS | `trello-mcp_1.0.0_darwin_amd64.tar.gz` | `trello-mcp_1.0.0_darwin_arm64.tar.gz` |
-| Linux | `trello-mcp_1.0.0_linux_amd64.tar.gz` | `trello-mcp_1.0.0_linux_arm64.tar.gz` |
-| Windows | `trello-mcp_1.0.0_windows_amd64.zip` | `trello-mcp_1.0.0_windows_arm64.zip` |
+| macOS | `trello-mcp_2.0.0_darwin_amd64.tar.gz` | `trello-mcp_2.0.0_darwin_arm64.tar.gz` |
 
 Download `checksums.txt` from the same release and verify the selected archive
-before extracting it. On macOS or Linux:
+before extracting it:
 
 ```bash
-grep 'trello-mcp_1.0.0_darwin_arm64.tar.gz' checksums.txt |
+grep 'trello-mcp_2.0.0_darwin_arm64.tar.gz' checksums.txt |
   shasum -a 256 -c -
 ```
 
-Replace the filename with the archive that was downloaded. Linux users can
-use `sha256sum -c -` instead of `shasum -a 256 -c -`.
-
-On Windows:
-
-```powershell
-(Get-FileHash .\trello-mcp_1.0.0_windows_amd64.zip -Algorithm SHA256).Hash
-```
-
-Compare the printed hash with the corresponding line in `checksums.txt`, then
-expand the archive and move `trello-mcp` or `trello-mcp.exe` to a directory on
-PATH.
+Replace the filename with the archive that was downloaded, extract it, and
+move `trello-mcp` to a directory on PATH.
 
 ## Homebrew
 
@@ -66,7 +55,7 @@ brew install --HEAD thaitanloi365/trello-mcp/trello-mcp
 trello-mcp version
 ```
 
-This works with Homebrew on macOS and Linux. Homebrew installs Go as a build
+This works with Homebrew on macOS and Linux. Homebrew installs Rust as a build
 dependency, compiles `trello-mcp`, and places the resulting executable in
 Homebrew's binary directory.
 
@@ -84,86 +73,26 @@ brew uninstall trello-mcp
 brew untap thaitanloi365/trello-mcp
 ```
 
-## Install with Go
+## Install with cargo
 
-Install Go 1.26.5 or newer, confirm `go version`, then run:
+Install Rust 1.88 or newer with [rustup](https://rustup.rs/), confirm
+`cargo --version`, then run:
 
 ```text
-go install github.com/thaitanloi365/trello-mcp/cmd/trello-mcp@latest
+cargo install --git https://github.com/thaitanloi365/trello-mcp --locked
 ```
 
-Go writes the executable to `GOBIN` when it is set. Otherwise it uses the
-`bin` directory under `GOPATH`.
-
-### macOS
-
-Homebrew is one way to install the Go toolchain:
+Cargo writes the executable to `$CARGO_HOME/bin`, which is `~/.cargo/bin` by
+default (`%USERPROFILE%\.cargo\bin` on Windows). rustup adds that directory to
+PATH; if the command is not found, add it and open a new terminal:
 
 ```bash
-brew install go
-go version
-go install github.com/thaitanloi365/trello-mcp/cmd/trello-mcp@latest
-```
-
-If the command is not found afterward, add Go's default binary directory to
-your shell PATH:
-
-```bash
-echo 'export PATH="$(go env GOPATH)/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
 trello-mcp version
 ```
 
-If `go env GOBIN` returns a non-empty path, add that directory instead.
-
-### Linux
-
-Install a recent Go toolchain using the
-[official Go installation guide](https://go.dev/doc/install) or your
-distribution's package manager. Distribution packages can lag behind the
-required Go version, so verify it before continuing:
-
-```bash
-go version
-go install github.com/thaitanloi365/trello-mcp/cmd/trello-mcp@latest
-```
-
-Add the default Go binary directory to PATH when necessary:
-
-```bash
-echo 'export PATH="$(go env GOPATH)/bin:$PATH"' >> ~/.profile
-. ~/.profile
-trello-mcp version
-```
-
-If `go env GOBIN` returns a non-empty path, add that directory instead.
-
-### Windows
-
-Install Go using WinGet or the installer from
-[go.dev/dl](https://go.dev/dl/):
-
-```powershell
-winget install --exact --id GoLang.Go
-go version
-go install github.com/thaitanloi365/trello-mcp/cmd/trello-mcp@latest
-```
-
-The default executable location is the `bin` directory under `GOPATH`. Inspect
-it in PowerShell:
-
-```powershell
-$goBin = go env GOBIN
-if (-not $goBin) {
-    $goBin = Join-Path (go env GOPATH) "bin"
-}
-$goBin
-& (Join-Path $goBin "trello-mcp.exe") version
-```
-
-Add the printed directory to the user PATH through **Settings > System >
-About > Advanced system settings > Environment Variables**, then open a new
-terminal.
+On Linux and Windows, a C compiler and linker must be installed first
+(`build-essential` on Debian and Ubuntu, Visual Studio Build Tools on
+Windows).
 
 ## Build from a source checkout
 
@@ -172,9 +101,8 @@ terminal.
 ```bash
 git clone https://github.com/thaitanloi365/trello-mcp.git
 cd trello-mcp
-go mod verify
-go test ./...
-go build -trimpath -o bin/trello-mcp ./cmd/trello-mcp
+cargo test
+cargo build --release --locked && cp target/release/trello-mcp bin/trello-mcp
 ./bin/trello-mcp version
 ```
 
@@ -192,9 +120,10 @@ Add `$HOME/.local/bin` to PATH if it is not already present.
 ```powershell
 git clone https://github.com/thaitanloi365/trello-mcp.git
 Set-Location trello-mcp
-go mod verify
-go test ./...
-go build -trimpath -o bin\trello-mcp.exe .\cmd\trello-mcp
+cargo test
+cargo build --release --locked
+New-Item -ItemType Directory -Force bin | Out-Null
+Copy-Item .\target\release\trello-mcp.exe .\bin\trello-mcp.exe
 .\bin\trello-mcp.exe version
 ```
 
@@ -237,27 +166,30 @@ Codex, Claude Code, Claude Desktop, Google Antigravity, and OpenCode setup.
 
 ## Upgrade
 
-For Go installations, rerun:
+For cargo installations, rerun:
 
 ```text
-go install github.com/thaitanloi365/trello-mcp/cmd/trello-mcp@latest
+cargo install --git https://github.com/thaitanloi365/trello-mcp --locked --force
 ```
 
 For a source checkout, pull, retest, and rebuild:
 
 ```bash
 git pull --ff-only
-go mod verify
-go test ./...
-go build -trimpath -o bin/trello-mcp ./cmd/trello-mcp
+cargo test
+cargo build --release --locked && cp target/release/trello-mcp bin/trello-mcp
 ```
+
+Upgrading a checkout from 1.x: the Go binary's `update` cannot build the Rust
+source, so run the `cargo build` line above once by hand. `trello-mcp update`
+works from then on.
 
 For Homebrew, use the `brew reinstall --HEAD` command shown above.
 
 ## Uninstall and retained data
 
 Remove the executable using the package manager that installed it, or delete
-the executable from `GOBIN`, `GOPATH/bin`, `$HOME/.local/bin`, or the chosen
+the executable from `$CARGO_HOME/bin`, `$HOME/.local/bin`, or the chosen
 Windows directory.
 
 Uninstalling the binary intentionally leaves configuration and cached card

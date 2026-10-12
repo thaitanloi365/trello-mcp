@@ -2,7 +2,28 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [2.0.0] - 2026-10-12
+
+Rewritten in Rust. Tools, the `draft_reply` prompt, CLI commands and flags,
+and the config file are unchanged.
+
+Upgrading from 1.x: the Go binary's `update` cannot build the Rust source.
+Run once from the checkout:
+`cargo build --release --locked && cp target/release/trello-mcp bin/trello-mcp`.
+
+### Rust rewrite
+
+- Built with Rust (rmcp, tokio, clap, reqwest). Install with
+  `cargo install --git https://github.com/thaitanloi365/trello-mcp`;
+  `go install` no longer works.
+- `trello-mcp update` rebuilds with `cargo build --release`.
+- The MCP server name is `trello-mcp` (was `trello-mcp-go`), and the HTTP
+  User-Agent is `trello-mcp/2.0.0`.
+- Release archives cover macOS arm64 and amd64. Linux and Windows build
+  from source.
+- Removed the `completion` command that Cobra generated.
+- Network errors no longer include the request URL, which carried the API
+  key and token.
 
 Breaking: the 57 tools from the reference implementation become 28. Rename
 calls in prompts and skills that use the old names.

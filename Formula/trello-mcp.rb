@@ -4,14 +4,14 @@ class TrelloMcp < Formula
   license "MIT"
   head "https://github.com/thaitanloi365/trello-mcp.git", branch: "master"
 
-  depends_on "go" => :build
+  depends_on "rust" => :build
 
   def install
-    system "go", "build", *std_go_args(ldflags: "-s -w"), "./cmd/trello-mcp"
+    system "cargo", "install", *std_cargo_args
   end
 
   test do
-    assert_match "1.0.0", shell_output("#{bin}/trello-mcp version")
-    assert_match "Run Trello MCP server", shell_output("#{bin}/trello-mcp --help")
+    assert_match "2.0.0", shell_output("#{bin}/trello-mcp version")
+    assert_match "Run the Trello MCP server", shell_output("#{bin}/trello-mcp --help")
   end
 end

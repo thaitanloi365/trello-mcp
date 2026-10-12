@@ -1,16 +1,16 @@
-# Trello MCP Server for Go
+# Trello MCP Server in Rust
 
-A Go implementation of a Model Context Protocol server for Trello, inspired by
+A Rust implementation of a Model Context Protocol server for Trello, inspired by
 [`delorenj/mcp-server-trello`](https://github.com/delorenj/mcp-server-trello).
 It exposes 28 token-lean MCP tools, runs over stdio, and adds a first-class
 CLI for persistent configuration.
 
 ## Install
 
-Install the latest source directly with Go 1.26.5 or newer:
+Install the latest source directly with Rust 1.88 or newer:
 
 ```bash
-go install github.com/thaitanloi365/trello-mcp/cmd/trello-mcp@latest
+cargo install --git https://github.com/thaitanloi365/trello-mcp --locked
 ```
 
 For Homebrew, source builds, PATH setup, upgrades, and platform-specific
@@ -146,13 +146,13 @@ this repository's path:
 # Fast normal use of the last built binary.
 alias trello-mcp='/absolute/path/to/trello-mcp/bin/trello-mcp'
 
-# Always run the latest source; no manual go build is needed.
+# Always run the latest source; no manual cargo build is needed.
 alias trello-mcp-dev='/absolute/path/to/trello-mcp/scripts/trello-mcp-dev'
 ```
 
 Update with `trello-mcp update`: it runs `git pull --ff-only` in the source
-checkout and rebuilds `bin/trello-mcp` in place. Use `--no-pull` to rebuild
-local changes only. Restart MCP clients afterwards to load the new binary.
+checkout and rebuilds `bin/trello-mcp` in place with `cargo build --release`.
+Use `--no-pull` to rebuild local changes only. Restart MCP clients afterwards to load the new binary.
 
 Reload zsh with `source ~/.zshrc`. For a no-rebuild project integration, run:
 
@@ -283,7 +283,7 @@ card, drafts a reply in that style, and posts it only after you approve.
 
 - The persistent config contains Trello credentials. Keep it private and out of
   source control.
-- `attach_file_to_card` can read a local file explicitly named by the MCP
+- `add_attachment` can read a local file explicitly named by the MCP
   caller. `download_attachment` can write to an explicit destination whose
   parent directory already exists. Both enforce `max_upload_bytes`.
 - Trello credentials are never included in HTTP error messages or health tool
@@ -294,9 +294,10 @@ card, drafts a reply in that style, and posts it only after you approve.
 ## Development
 
 ```bash
-go test ./...
-go vet ./...
-go build ./cmd/trello-mcp
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo build --release
 ```
 
 The Trello client has tests for credential injection, response decoding, and
