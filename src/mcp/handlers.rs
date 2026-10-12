@@ -375,7 +375,8 @@ impl Server {
     }
 }
 
-/// Strings as-is, anything else in its JSON form (Go's fmt.Sprint).
+/// Strings as-is; other items are rendered as JSON (Go used fmt.Sprint; Trello
+/// rejects such values either way).
 pub(crate) fn join_values(values: &[Value]) -> String {
     values
         .iter()
