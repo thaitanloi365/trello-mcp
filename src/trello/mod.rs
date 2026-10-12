@@ -29,11 +29,11 @@ pub enum Error {
         status: u16,
         message: String,
     },
-    #[error("call Trello {method} {path}: {source}")]
+    #[error("call Trello {method} {path}: {cause}")]
     Transport {
         method: Method,
         path: String,
-        source: reqwest::Error,
+        cause: reqwest::Error,
     },
     #[error("{0}")]
     Message(String),
@@ -143,7 +143,7 @@ impl Client {
                     return Err(Error::Transport {
                         method,
                         path: safe_path.into(),
-                        source: err.without_url(),
+                        cause: err.without_url(),
                     });
                 }
             };

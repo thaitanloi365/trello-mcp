@@ -16,7 +16,7 @@ const CODEX_MANAGED_BEGIN: &str = "# BEGIN trello-mcp managed configuration";
 const CODEX_MANAGED_END: &str = "# END trello-mcp managed configuration";
 
 fn io_err(context: String) -> impl FnOnce(std::io::Error) -> Error {
-    move |source| Error::Io { context, source }
+    move |cause| Error::Io { context, cause }
 }
 
 /// Returns the client-recognized config path relative to a project root.

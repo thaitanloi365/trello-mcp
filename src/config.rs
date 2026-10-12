@@ -19,15 +19,15 @@ const CONFIG_ENVIRONMENT_VARIABLE: &str = "TRELLO_MCP_CONFIG";
 pub enum Error {
     #[error("{0}")]
     Invalid(String),
-    #[error("{context}: {source}")]
+    #[error("{context}: {cause}")]
     Io {
         context: String,
-        source: std::io::Error,
+        cause: std::io::Error,
     },
-    #[error("parse config {path}: {source}")]
+    #[error("parse config {path}: {cause}")]
     Parse {
         path: String,
-        source: serde_json::Error,
+        cause: serde_json::Error,
     },
 }
 
@@ -84,10 +84,10 @@ fn home_dir() -> Result<PathBuf, Error> {
     })
 }
 
-fn io_error(context: &str, source: std::io::Error) -> Error {
+fn io_error(context: &str, cause: std::io::Error) -> Error {
     Error::Io {
         context: context.to_string(),
-        source,
+        cause,
     }
 }
 
@@ -146,9 +146,9 @@ pub fn load(path: &Path) -> Result<Config, Error> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
         Err(e) => return Err(io_error(&format!("read config {}", path.display()), e)),
     };
-    let mut cfg: Config = serde_json::from_slice(&data).map_err(|source| Error::Parse {
+    let mut cfg: Config = serde_json::from_slice(&data).map_err(|cause| Error::Parse {
         path: path.display().to_string(),
-        source,
+        cause,
     })?;
     cfg.normalize();
     Ok(cfg)

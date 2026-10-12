@@ -29,10 +29,10 @@ pub struct Options {
 pub enum Error {
     #[error("{0}")]
     Invalid(String),
-    #[error("{context}: {source}")]
+    #[error("{context}: {cause}")]
     Io {
         context: String,
-        source: std::io::Error,
+        cause: std::io::Error,
     },
 }
 

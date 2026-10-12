@@ -234,8 +234,14 @@ fn run_config(
         }
         bail!("config subcommand is required");
     };
+    if matches!(command, ConfigCommand::Path) {
+        // Only resolve the path: this is how users locate a broken file.
+        writeln!(stdout, "{}", config::resolve_path(config_path)?.display())?;
+        return Ok(());
+    }
     let manager = config::Manager::new(config_path)?;
     match command {
+        ConfigCommand::Path => unreachable!("handled above"),
         ConfigCommand::Init => {
             config::save(manager.path(), &manager.file())?;
             writeln!(stdout, "{}", manager.path().display())?;
@@ -304,9 +310,6 @@ fn run_config(
             manager.effective()?.validate(!without_credentials)?;
             writeln!(stdout, "ok")?;
         }
-        ConfigCommand::Path => {
-            writeln!(stdout, "{}", config::resolve_path(config_path)?.display())?
-        }
     }
     Ok(())
 }
@@ -350,7 +353,7 @@ fn serve(config_path: &str) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let manager = Arc::new(config::Manager::new(config_path)?);
     manager.effective()?.validate(true)?;
-    runtime.block_on(async {
+    let result = runtime.block_on(async {
         let server = mcp::Server::new(Arc::new(trello::Client::new(manager)));
         let service = server.serve(rmcp::transport::stdio()).await?;
         tokio::select! {
@@ -358,7 +361,10 @@ fn serve(config_path: &str) -> anyhow::Result<()> {
             () = shutdown_signal() => {}
         }
         Ok(())
-    })
+    });
+    // The blocking stdin read can't be cancelled; dropping the runtime would hang.
+    runtime.shutdown_background();
+    result
 }
 
 async fn shutdown_signal() {
@@ -406,7 +412,8 @@ fn update(no_pull: bool, stdout: &mut dyn Write) -> anyhow::Result<()> {
         }
     }
     let status = Process::new("cargo")
-        .args(["build", "--release", "--locked"])
+        .args(["build", "--release", "--locked", "--target-dir"])
+        .arg(root.join("target"))
         .current_dir(&root)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
@@ -605,6 +612,24 @@ mod tests {
         assert_eq!(mask(""), "");
         assert_eq!(mask("short"), "********");
         assert_eq!(mask("ééééééééé"), "éééé...éééé");
+    }
+
+    #[test]
+    fn config_path_ignores_broken_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.json");
+        std::fs::write(&path, "{bad").unwrap();
+        let (out, _) = run_ok(&["config", "path", "--config", path.to_str().unwrap()]);
+        assert_eq!(out.trim(), path.to_str().unwrap());
+    }
+
+    #[test]
+    fn config_error_prints_cause_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.json");
+        std::fs::write(&path, "{bad").unwrap();
+        let msg = run_err(&["config", "show", "--config", path.to_str().unwrap()]);
+        assert_eq!(msg.matches("key must be a string").count(), 1, "{msg}");
     }
 
     #[test]
