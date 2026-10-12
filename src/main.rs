@@ -1,4 +1,5 @@
 mod config;
+mod mcp;
 mod trello;
 mod util;
 mod version;
