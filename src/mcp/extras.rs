@@ -2,7 +2,10 @@
 
 use std::time::Instant;
 
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::{
+    Engine, alphabet,
+    engine::{GeneralPurpose, GeneralPurposeConfig},
+};
 use reqwest::Method;
 use serde_json::{Value, json};
 
@@ -230,9 +233,7 @@ impl Server {
         if name.is_empty() {
             return Err(msg("name is required with data"));
         }
-        let decoded = STANDARD
-            .decode(&data)
-            .map_err(|err| msg(format!("decode data: {err}")))?;
+        let decoded = decode_base64(&data).map_err(|err| msg(format!("decode data: {err}")))?;
         Ok(acked(
             self.client.upload_data(&card_id, &name, &decoded).await?,
         ))
@@ -618,6 +619,15 @@ impl Server {
     }
 }
 
+/// Go's StdEncoding.DecodeString: skips \r and \n, ignores non-zero trailing bits.
+fn decode_base64(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    let engine = GeneralPurpose::new(
+        &alphabet::STANDARD,
+        GeneralPurposeConfig::new().with_decode_allow_trailing_bits(true),
+    );
+    engine.decode(data.replace(['\r', '\n'], ""))
+}
+
 fn field_string(object: &Args, path: &[&str]) -> String {
     let mut current = match object.get(path[0]) {
         Some(value) => value,
@@ -911,6 +921,13 @@ mod tests {
         assert_eq!(q["dueReminder"], "1440");
         assert_eq!(q["due"], "2026-11-01");
         assert_eq!(q["idLabels"], "label-blue,label-bug");
+    }
+
+    #[test]
+    fn decode_base64_matches_go() {
+        assert_eq!(decode_base64("aGVs\nbG8=\r\n").unwrap(), b"hello");
+        assert_eq!(decode_base64("QR==").unwrap(), vec![0x41]);
+        assert!(decode_base64("!!!").is_err());
     }
 
     #[test]
