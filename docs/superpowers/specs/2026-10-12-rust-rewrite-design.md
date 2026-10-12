@@ -50,7 +50,11 @@ command and flag names and short descriptions still match).
 
 Intentional differences:
 
-- MCP implementation name changes from `trello-mcp-go` to `trello-mcp`.
+- MCP implementation name changes from `trello-mcp-go` to `trello-mcp`, and
+  the HTTP User-Agent from `trello-mcp-go/1.0.0` to `trello-mcp/2.0.0`.
+- Network-error text no longer includes the request URL. Go's did, and that
+  URL carries the API key and token.
+- Cobra's auto-generated `completion` command is dropped.
 - `update` runs `git pull --ff-only` (unless `--no-pull`), then
   `cargo build --release --locked`. It copies `target/release/trello-mcp`
   next to the running binary and renames it into place, then runs
