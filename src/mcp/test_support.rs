@@ -28,11 +28,13 @@ pub(crate) async fn test_server(
     Mock::given(any()).respond_with(handler).mount(&api).await;
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.json");
-    let mut cfg = Config::default();
-    cfg.api_key = "key".into();
-    cfg.token = "token".into();
-    cfg.api_base_url = api.uri();
-    cfg.allowed_workspace_ids = allowed.iter().map(|id| id.to_string()).collect();
+    let cfg = Config {
+        api_key: "key".into(),
+        token: "token".into(),
+        api_base_url: api.uri(),
+        allowed_workspace_ids: allowed.iter().map(|id| id.to_string()).collect(),
+        ..Config::default()
+    };
     config::save(&path, &cfg).expect("save config");
     let manager = Arc::new(
         Manager::with_env(path.to_str().expect("utf-8 path"), config::no_env()).expect("manager"),

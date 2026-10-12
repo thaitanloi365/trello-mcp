@@ -13,6 +13,7 @@ mod tools;
 
 pub type Args = Map<String, Value>;
 
+#[derive(Debug)]
 pub enum Output {
     Json(Value),
     Text(String),

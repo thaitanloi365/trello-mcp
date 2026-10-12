@@ -248,30 +248,40 @@ impl ServerHandler for Server {
         request: GetPromptRequestParams,
         _: RequestContext<RoleServer>,
     ) -> Result<GetPromptResponse, McpError> {
-        let argument = |name: &str| {
-            request
-                .arguments
-                .as_ref()
-                .and_then(|args| args.get(name))
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim()
-                .to_string()
-        };
-        let card = argument("card");
-        if card.is_empty() {
-            return Err(McpError::invalid_params(
-                format!("argument {:?} is required", "card"),
-                None,
-            ));
-        }
-        Ok(GetPromptResult::new(vec![PromptMessage::new_text(
-            Role::User,
-            draft_reply_text(&card, &argument("notes")),
-        )])
-        .with_description("Draft a Trello reply")
-        .into())
+        draft_reply_prompt(&request.name, request.arguments.as_ref()).map(Into::into)
     }
+}
+
+fn draft_reply_prompt(
+    name: &str,
+    arguments: Option<&Map<String, Value>>,
+) -> Result<GetPromptResult, McpError> {
+    if name != "draft_reply" {
+        return Err(McpError::invalid_params(
+            format!("unknown prompt {name:?}"),
+            None,
+        ));
+    }
+    let argument = |key: &str| {
+        arguments
+            .and_then(|args| args.get(key))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    let card = argument("card");
+    if card.is_empty() {
+        return Err(McpError::invalid_params(
+            format!("argument {:?} is required", "card"),
+            None,
+        ));
+    }
+    Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+        Role::User,
+        draft_reply_text(&card, &argument("notes")),
+    )])
+    .with_description("Draft a Trello reply"))
 }
 
 #[cfg(test)]
@@ -387,6 +397,21 @@ mod tests {
             encode_result(&json!({"name": "Terms & <Privacy>"})),
             r#"{"name":"Terms & <Privacy>"}"#
         );
+    }
+
+    #[test]
+    fn draft_reply_prompt_checks_name_and_card() {
+        let args = |v: Value| v.as_object().unwrap().clone();
+        let err = draft_reply_prompt("foo", Some(&args(json!({"card": "abc"})))).unwrap_err();
+        assert!(
+            err.message.contains("unknown prompt \"foo\""),
+            "{}",
+            err.message
+        );
+        let err = draft_reply_prompt("draft_reply", None).unwrap_err();
+        assert!(err.message.contains("argument \"card\" is required"));
+        let ok = draft_reply_prompt("draft_reply", Some(&args(json!({"card": " abc "})))).unwrap();
+        assert_eq!(ok.messages.len(), 1);
     }
 
     #[test]
