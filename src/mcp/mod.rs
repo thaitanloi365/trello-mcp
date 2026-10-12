@@ -7,6 +7,9 @@ use serde_json::{Map, Value};
 use crate::{config, trello, util};
 
 mod board;
+mod card;
+mod extras;
+mod handlers;
 mod server;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -42,10 +45,6 @@ pub struct Server {
 impl Server {
     pub fn new(client: Arc<trello::Client>) -> Self {
         Self { client }
-    }
-
-    pub(crate) async fn handle(&self, name: &str, _args: &Args) -> Result<Output, Error> {
-        Err(msg(format!("tool {name:?} is not implemented")))
     }
 }
 

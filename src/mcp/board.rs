@@ -158,27 +158,6 @@ impl Server {
             .is_empty())
     }
 
-    pub(crate) async fn ensure_list_allowed(&self, id: &str) -> Result<(), Error> {
-        if !self.workspace_restrictions_enabled()? {
-            return Ok(());
-        }
-        let list = self
-            .client
-            .call(
-                Method::GET,
-                &format!("/lists/{}", escape(id)),
-                json!({"fields": "id,idBoard"}),
-                None,
-            )
-            .await?;
-        match nested_string(&list, &["idBoard"]) {
-            board_id if board_id.is_empty() => {
-                Err(msg("Trello list response did not include idBoard"))
-            }
-            board_id => Ok(self.client.ensure_board_allowed(&board_id).await?),
-        }
-    }
-
     /// Drops items whose board is outside the allowed workspaces.
     pub(crate) async fn filter_by_workspace(&self, value: Value) -> Result<Value, Error> {
         if !self.workspace_restrictions_enabled()? {
