@@ -523,6 +523,22 @@ mod tests {
     }
 
     #[test]
+    fn match_prefers_names_and_open_items_go() {
+        let labels = objects(json!([
+            {"id": "label-named", "name": "Green", "color": "lime"},
+            {"id": "label-unnamed", "name": "", "color": "green"}
+        ]));
+        assert_eq!(
+            match_item(&labels, "labels", "green").unwrap()["id"],
+            "label-named"
+        );
+        let lists = objects(json!([{"id": "list-q3", "name": "Q3", "closed": true}]));
+        assert_eq!(match_item(&lists, "lists", "q3").unwrap()["id"], "list-q3");
+        let inbox = objects(json!([{"id": "list-inbox", "name": "@inbox"}]));
+        assert!(match_item(&inbox, "lists", "@inbox").is_ok());
+    }
+
+    #[test]
     fn trello_ids_are_24_lowercase_hex() {
         assert!(is_trello_id("0123456789abcdef01234567"));
         assert!(!is_trello_id("0123456789ABCDEF01234567"));
