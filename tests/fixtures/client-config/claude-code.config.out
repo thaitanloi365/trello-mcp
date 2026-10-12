@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "trello": {
+      "type": "stdio",
+      "command": "/x/trello-mcp",
+      "args": [
+        "serve",
+        "--config",
+        "/x/config.json"
+      ]
+    }
+  }
+}

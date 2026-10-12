@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "trello": {
+      "type": "local",
+      "command": [
+        "/x/trello-mcp",
+        "serve",
+        "--config",
+        "/x/config.json"
+      ],
+      "enabled": true
+    }
+  }
+}

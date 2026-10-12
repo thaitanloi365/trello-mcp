@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "trello": {
+      "command": "/x/trello-mcp",
+      "args": [
+        "serve",
+        "--config",
+        "/x/config.json"
+      ]
+    }
+  }
+}

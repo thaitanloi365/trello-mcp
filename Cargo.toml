@@ -1,0 +1,28 @@
+[package]
+name = "trello-mcp"
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Model Context Protocol server for Trello"
+license = "MIT"
+repository = "https://github.com/thaitanloi365/trello-mcp"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+clap = { version = "4.6", features = ["derive"] }
+dirs = "6"
+reqwest = { version = "0.13", features = ["multipart"] }
+rmcp = { version = "3.5.1", default-features = false, features = ["server", "transport-io"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "signal", "time"] }
+
+[dev-dependencies]
+wiremock = "0.6"
+
+[profile.release]
+strip = true
+lto = "thin"

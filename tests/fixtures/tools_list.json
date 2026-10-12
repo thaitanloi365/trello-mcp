@@ -1,0 +1,892 @@
+{
+  "instructions": "Trello tools. Cards take an ID, short link, or URL; lists, labels, members, and custom fields take a name or ID. Board tools default to the active board. Before any change other people see (comments, new or updated cards, checklists), show the user a preview and wait for approval. Keep text short: main point first.",
+  "tools": [
+    {
+      "description": "Attach a link, a local file, or base64 data to a card; give exactly one of url, filePath, or data",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cardId": {
+            "description": "Card ID, short link, or Trello card URL",
+            "type": "string"
+          },
+          "data": {
+            "description": "Base64 file content",
+            "type": "string"
+          },
+          "filePath": {
+            "description": "Local file path, subject to max_upload_bytes",
+            "type": "string"
+          },
+          "name": {
+            "description": "Attachment name; required with data",
+            "type": "string"
+          },
+          "setCover": {
+            "description": "Use the url image as the card cover",
+            "type": "boolean"
+          },
+          "url": {
+            "description": "Link or image URL",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cardId"
+        ],
+        "type": "object"
+      },
+      "name": "add_attachment"
+    },
+    {
+      "description": "Add an item to a checklist Show the user the exact text and wait for approval first.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "checked": {
+            "description": "Start as done",
+            "type": "boolean"
+          },
+          "checklistId": {
+            "description": "Checklist ID",
+            "type": "string"
+          },
+          "due": {
+            "description": "ISO 8601 due date",
+            "type": "string"
+          },
+          "dueReminder": {
+            "description": "Reminder minutes before due; -1 for none",
+            "type": "integer"
+          },
+          "member": {
+            "description": "Assignee name, username, ID, or me",
+            "type": "string"
+          },
+          "name": {
+            "description": "Item text",
+            "type": "string"
+          },
+          "position": {
+            "description": "top, bottom, or a number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "checklistId",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "add_checklist_item"
+    },
+    {
+      "description": "Post a comment on a card. Write plain English: main point first, short '- ' bullets, no jargon. Link every attachment or URL as [name](url); never paste a bare long URL. Show the user the exact text and wait for approval first.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cardId": {
+            "description": "Card ID, short link, or Trello card URL",
+            "type": "string"
+          },
+          "text": {
+            "description": "Comment text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cardId",
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "add_comment"
+    },
+    {
+      "description": "Copy a card into a list",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "boardId": {
+            "description": "Board ID; defaults to the active board",
+            "type": "string"
+          },
+          "keepFromSource": {
+            "description": "Parts to copy: attachments, checklists, comments, due, labels, members, stickers",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "list": {
+            "description": "List name or ID; names resolve on boardId or the active board",
+            "type": "string"
+          },
+          "name": {
+            "description": "Name for the copy",
+            "type": "string"
+          },
+          "position": {
+            "description": "top, bottom, or a number",
+            "type": "string"
+          },
+          "sourceCardId": {
+            "description": "Card ID, short link, or Trello card URL",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sourceCardId",
+          "list"
+        ],
+        "type": "object"
+      },
+      "name": "copy_card"
+    },
+    {
+      "description": "Create a board in a workspace",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "defaultLists": {
+            "default": true,
+            "description": "Create Trello's default lists",
+            "type": "boolean"
+          },
+          "description": {
+            "description": "Board description",
+            "type": "string"
+          },
+          "name": {
+            "description": "Board name",
+            "type": "string"
+          },
+          "workspaceId": {
+            "description": "Workspace ID; defaults to the active workspace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "create_board"
+    },
+    {
+      "description": "Create one or more cards in a list Show the user the exact text and wait for approval first.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "boardId": {
+            "description": "Board ID; defaults to the active board",
+            "type": "string"
+          },
+          "cards": {
+            "description": "Cards to create, in order",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "description": {
+                  "description": "Markdown description",
+                  "type": "string"
+                },
+                "due": {
+                  "description": "ISO 8601 due date",
+                  "type": "string"
+                },
+                "labels": {
+                  "description": "Label names or IDs",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "members": {
+                  "description": "Member names, usernames, IDs, or me",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "name": {
+                  "description": "Card title",
+                  "type": "string"
+                },
+                "position": {
+                  "description": "top, bottom, or a number",
+                  "type": "string"
+                },
+                "start": {
+                  "description": "ISO 8601 start date",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "list": {
+            "description": "List name or ID; names resolve on boardId or the active board",
+            "type": "string"
+          }
+        },
+        "required": [
+          "list",
+          "cards"
+        ],
+        "type": "object"
+      },
+      "name": "create_cards"
+    },
+    {
+      "description": "Create a checklist on a card with its items Show the user the exact text and wait for approval first.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cardId": {
+            "description": "Card ID, short link, or Trello card URL",
+            "type": "string"
+          },
+          "items": {
+            "description": "Item texts, in order",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "Checklist name",
+            "type": "string"
+          },
+          "position": {
+            "description": "top, bottom, or a number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cardId",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "create_checklist"
+    },
+    {
+      "description": "Create a board label",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "boardId": {
+            "description": "Board ID; defaults to the active board",
+            "type": "string"
+          },
+          "color": {
+            "description": "Label color",
+            "enum": [
+              "yellow",
+              "purple",
+              "blue",
+              "red",
+              "green",
+              "orange",
+              "black",
+              "sky",
+              "pink",
+              "lime"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "description": "Label name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "color"
+        ],
+        "type": "object"
+      },
+      "name": "create_label"
+    },
+    {
+      "description": "Create a list on a board",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "boardId": {
+            "description": "Board ID; defaults to the active board",
+            "type": "string"
+          },
+          "name": {
+            "description": "List name",
+            "type": "string"
+          },
+          "position": {
+            "description": "top, bottom, or a number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "create_list"
+    },
+    {
+      "description": "Delete a checklist item",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "checkItemId": {
+            "description": "Checklist item ID",
+            "type": "string"
+          },
+          "checklistId": {
+            "description": "Checklist ID",
+            "type": "string"
+          }
+        },
+        "required": [
+          "checklistId",
+          "checkItemId"
+        ],
+        "type": "object"
+      },
+      "name": "delete_checklist_item"
+    },
+    {
+      "description": "Delete a comment",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "commentId": {
+            "description": "Comment ID",
+            "type": "string"
+          }
+        },
+        "required": [
+          "commentId"
+        ],
+        "type": "object"
+      },
+      "name": "delete_comment"
+    },
+    {
+      "description": "Delete a board label",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "labelId": {
+            "description": "Label ID",
+            "type": "string"
+          }
+        },
+        "required": [
+          "labelId"
+        ],
+        "type": "object"
+      },
+      "name": "delete_label"
+    },
+    {
+      "description": "Download a card attachment to a local file",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "attachmentId": {
+            "description": "Attachment ID",
+            "type": "string"
+          },
+          "cardId": {
+            "description": "Card ID, short link, or Trello card URL",
+            "type": "string"
+          },
+          "destinationPath": {
+            "description": "Local destination path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cardId",
+          "attachmentId",
+          "destinationPath"
+        ],
+        "type": "object"
+      },
+      "name": "download_attachment"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "description": "Find checklist items by text, checklist name, or both, on a card or board; results are grouped by checklist",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "boardId": {
+            "description": "Board ID; defaults to the active board",
+            "type": "string"
+          },
+          "cardId": {
+            "description": "Card ID, short link, or Trello card URL; omit to search the board",
+            "type": "string"
+          },
+          "checklist": {
+            "description": "Checklist name, such as Acceptance Criteria",
+            "type": "string"
+          },
+          "query": {
+            "description": "Case-insensitive text in the item",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "find_checklist_items"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "description": "Recent actions on a card, or on a board when cardId is omitted",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "boardId": {
+            "description": "Board ID; defaults to the active board",
+            "type": "string"
+          },
+          "cardId": {
+            "description": "Card ID, short link, or Trello card URL",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "description": "Maximum actions",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_activity"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "description": "Get a board's lists, labels, members, and custom fields with their IDs",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "boardId": {
+            "description": "Board ID; defaults to the active board",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_board"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "description": "Read a card as Markdown: details, custom fields, checklists with IDs, attachment links, and recent comments",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cardId": {
+            "description": "Card ID, short link, or Trello card URL",
+            "type": "string"
+          },
+          "commentsLimit": {
+            "default": 10,
+            "description": "Latest comments to include, 0 to 100",
+            "type": "integer"
+          },
+          "delivery": {
+            "default": "auto",
+            "description": "auto writes output over 16 KiB to a private file and returns its path",
+            "enum": [
+              "auto",
+              "inline",
+              "file"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "cardId"
+        ],
+        "type": "object"
+      },
+      "name": "get_card"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "description": "Check configuration and Trello API reachability",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "get_health"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "description": "List open boards, optionally in one workspace",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "workspaceId": {
+            "description": "Workspace ID",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_boards"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "description": "List open cards in a list, on a board, or, with neither, assigned to me",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "boardId": {
+            "description": "Board ID to list all its open cards",
+            "type": "string"
+          },
+          "limit": {
+            "default": 100,
+            "description": "Maximum cards",
+            "type": "integer"
+          },
+          "list": {
+            "description": "List name or ID; names resolve on boardId or the active board",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_cards"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "description": "List workspaces",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "list_workspaces"
+    },
+    {
+      "description": "Save the default board, workspace, or both for later calls",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "boardId": {
+            "description": "Board ID",
+            "type": "string"
+          },
+          "workspaceId": {
+            "description": "Workspace ID",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "set_active"
+    },
+    {
+      "description": "Set or clear a custom field on a card",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cardId": {
+            "description": "Card ID, short link, or Trello card URL",
+            "type": "string"
+          },
+          "clear": {
+            "description": "Clear the field instead of setting a value",
+            "type": "boolean"
+          },
+          "field": {
+            "description": "Custom field name or ID",
+            "type": "string"
+          },
+          "value": {
+            "description": "Text, number, true or false, ISO date, or list option",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cardId",
+          "field"
+        ],
+        "type": "object"
+      },
+      "name": "set_custom_field"
+    },
+    {
+      "description": "Change a card's fields, dates, list, archive or watch state, labels, or members; omitted fields stay unchanged Show the user the exact text and wait for approval first.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "addLabels": {
+            "description": "Label names or IDs to add",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "addMembers": {
+            "description": "Member names, usernames, IDs, or me to add",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cardId": {
+            "description": "Card ID, short link, or Trello card URL",
+            "type": "string"
+          },
+          "closed": {
+            "description": "Archive (true) or restore (false)",
+            "type": "boolean"
+          },
+          "description": {
+            "description": "New Markdown description",
+            "type": "string"
+          },
+          "due": {
+            "description": "ISO 8601 due date; empty string clears",
+            "type": "string"
+          },
+          "dueComplete": {
+            "description": "Mark the due date done",
+            "type": "boolean"
+          },
+          "dueReminder": {
+            "description": "Reminder minutes before due; -1 for none",
+            "type": "integer"
+          },
+          "list": {
+            "description": "Move to this list, by name or ID on the card's board",
+            "type": "string"
+          },
+          "name": {
+            "description": "New title",
+            "type": "string"
+          },
+          "position": {
+            "description": "top, bottom, or a number",
+            "type": "string"
+          },
+          "removeLabels": {
+            "description": "Label names or IDs to remove",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "removeMembers": {
+            "description": "Members to remove",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "start": {
+            "description": "ISO 8601 start date; empty string clears",
+            "type": "string"
+          },
+          "subscribed": {
+            "description": "Watch the card",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "cardId"
+        ],
+        "type": "object"
+      },
+      "name": "update_card"
+    },
+    {
+      "description": "Change a checklist item's text, done state, position, due date, or assignee Show the user the exact text and wait for approval first.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cardId": {
+            "description": "Card ID, short link, or Trello card URL",
+            "type": "string"
+          },
+          "checkItemId": {
+            "description": "Checklist item ID",
+            "type": "string"
+          },
+          "checked": {
+            "description": "Done (true) or not done (false)",
+            "type": "boolean"
+          },
+          "due": {
+            "description": "ISO 8601 due date; empty string clears",
+            "type": "string"
+          },
+          "dueReminder": {
+            "description": "Reminder minutes before due; -1 for none",
+            "type": "integer"
+          },
+          "member": {
+            "description": "Assignee name, username, ID, or me; empty string clears",
+            "type": "string"
+          },
+          "name": {
+            "description": "New text",
+            "type": "string"
+          },
+          "position": {
+            "description": "top, bottom, or a number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cardId",
+          "checkItemId"
+        ],
+        "type": "object"
+      },
+      "name": "update_checklist_item"
+    },
+    {
+      "description": "Edit a comment. Write plain English: main point first, short '- ' bullets, no jargon. Link every attachment or URL as [name](url); never paste a bare long URL. Show the user the exact text and wait for approval first.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "commentId": {
+            "description": "Comment ID",
+            "type": "string"
+          },
+          "text": {
+            "description": "New comment text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "commentId",
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "update_comment"
+    },
+    {
+      "description": "Rename or recolor a board label",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "color": {
+            "description": "New color; null removes it",
+            "enum": [
+              "yellow",
+              "purple",
+              "blue",
+              "red",
+              "green",
+              "orange",
+              "black",
+              "sky",
+              "pink",
+              "lime",
+              "null"
+            ],
+            "type": "string"
+          },
+          "labelId": {
+            "description": "Label ID",
+            "type": "string"
+          },
+          "name": {
+            "description": "New name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "labelId"
+        ],
+        "type": "object"
+      },
+      "name": "update_label"
+    },
+    {
+      "description": "Rename, move, archive, or watch a list",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "boardId": {
+            "description": "Board ID; defaults to the active board",
+            "type": "string"
+          },
+          "closed": {
+            "description": "Archive (true) or restore (false)",
+            "type": "boolean"
+          },
+          "list": {
+            "description": "List name or ID; names resolve on boardId or the active board",
+            "type": "string"
+          },
+          "name": {
+            "description": "New name",
+            "type": "string"
+          },
+          "position": {
+            "description": "top, bottom, or a number",
+            "type": "string"
+          },
+          "subscribed": {
+            "description": "Watch the list",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "list"
+        ],
+        "type": "object"
+      },
+      "name": "update_list"
+    }
+  ],
+  "prompts": [
+    {
+      "arguments": [
+        {
+          "name": "card",
+          "description": "Card ID, short link, or Trello card URL",
+          "required": true
+        },
+        {
+          "name": "notes",
+          "description": "What the reply should say"
+        }
+      ],
+      "description": "Draft a reply comment for a Trello card and post it only after approval",
+      "name": "draft_reply"
+    }
+  ]
+}
