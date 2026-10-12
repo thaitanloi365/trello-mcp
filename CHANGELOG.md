@@ -4,8 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [2.0.0] - 2026-10-12
 
-Rewritten in Rust. Tools, the `draft_reply` prompt, CLI commands and flags,
-and the config file are unchanged.
+Rewritten in Rust. Tools, the `draft_reply` prompt, and the config file are
+unchanged. CLI commands and flags are otherwise unchanged.
 
 Upgrading from 1.x: the Go binary's `update` cannot build the Rust source.
 Run once from the checkout:
@@ -22,6 +22,8 @@ Run once from the checkout:
 - Release archives cover macOS arm64 and amd64. Linux and Windows build
   from source.
 - Removed the `completion` command that Cobra generated.
+- `scripts/trello-mcp-dev` now runs `cargo run --release` (needs a Rust
+  toolchain; first launch compiles).
 - Network errors no longer include the request URL, which carried the API
   key and token.
 
@@ -94,4 +96,5 @@ calls in prompts and skills that use the old names.
   macOS, Linux, and Windows.
 - Prebuilt release archives for macOS, Linux, and Windows on amd64 and arm64.
 
+[2.0.0]: https://github.com/thaitanloi365/trello-mcp/releases/tag/v2.0.0
 [1.0.0]: https://github.com/thaitanloi365/trello-mcp/releases/tag/v1.0.0

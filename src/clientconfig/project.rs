@@ -4,7 +4,6 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use super::{
@@ -74,7 +73,11 @@ fn merge_codex(existing: &[u8], generated: &str, target: &str) -> Result<Vec<u8>
         "{CODEX_MANAGED_BEGIN}\n{}\n{CODEX_MANAGED_END}",
         generated.trim()
     );
-    let content = String::from_utf8_lossy(existing);
+    let content = std::str::from_utf8(existing).map_err(|err| {
+        Error::Invalid(format!(
+            "parse existing codex project config {target}: {err}"
+        ))
+    })?;
     let start = content.find(CODEX_MANAGED_BEGIN);
     let end = content.find(CODEX_MANAGED_END);
     if start.is_some() != end.is_some() || matches!((start, end), (Some(s), Some(e)) if e < s) {
@@ -100,9 +103,8 @@ fn merge_codex(existing: &[u8], generated: &str, target: &str) -> Result<Vec<u8>
     Ok(format!("{content}\n\n{block}\n").into_bytes())
 }
 
-// Like Go's Decoder.Decode: reads one value and ignores any trailing data.
 fn decode_json(data: &[u8]) -> Result<Map<String, Value>, serde_json::Error> {
-    Map::deserialize(&mut serde_json::Deserializer::from_slice(data))
+    serde_json::from_slice(data)
 }
 
 fn merge_json(existing: &[u8], generated: &str, client: &str) -> Result<Vec<u8>, Error> {
@@ -199,6 +201,32 @@ mod tests {
             assert_eq!(project_config_path(client).unwrap(), want);
         }
         assert!(project_config_path("claude-desktop").is_err());
+    }
+
+    #[test]
+    fn setup_project_rejects_trailing_json_content() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(".mcp.json");
+        let original = "{\"mcpServers\":{}}\n// keep me\n";
+        fs::write(&path, original).unwrap();
+        let err = setup("claude-code", root.path()).unwrap_err().to_string();
+        assert!(
+            err.contains("parse existing claude-code project config"),
+            "{err}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn setup_project_rejects_invalid_utf8_codex_config() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(".codex/config.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = b"# caf\xe9\n";
+        fs::write(&path, original).unwrap();
+        let err = setup("codex", root.path()).unwrap_err().to_string();
+        assert!(err.contains("parse existing codex project config"), "{err}");
+        assert_eq!(fs::read(&path).unwrap(), original);
     }
 
     #[test]

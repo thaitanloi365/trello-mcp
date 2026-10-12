@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use super::board::{match_item, names_of};
 use super::{
     Args, Error, Server, boolean, copy_arg, copy_present, escape, integer, map_args, msg,
-    nested_string, nested_value, object_slice, string_slice, text,
+    nested_string, nested_value, object_slice, object_string, string_slice, text,
 };
 use crate::mcp::handlers::acked;
 
@@ -190,7 +190,7 @@ impl Server {
         let path = format!(
             "/cards/{}/customField/{}/item",
             escape(&card_id),
-            escape(&field_string(&field, &["id"]))
+            escape(&object_string(&field, &["id"]))
         );
         self.write(Method::PUT, &path, Value::Null, Some(body))
             .await
@@ -436,7 +436,7 @@ impl Server {
         let mut index: Option<Args> = None;
         for checklist in &checklists {
             if !checklist_name.is_empty()
-                && field_string(checklist, &["name"]).to_lowercase() != wanted
+                && object_string(checklist, &["name"]).to_lowercase() != wanted
             {
                 continue;
             }
@@ -446,7 +446,7 @@ impl Server {
             let mut items = Vec::new();
             for item in object_slice(checklist.get("checkItems").unwrap_or(&Value::Null)) {
                 if !query.is_empty()
-                    && !field_string(&item, &["name"])
+                    && !object_string(&item, &["name"])
                         .to_lowercase()
                         .contains(&query)
                 {
@@ -454,7 +454,7 @@ impl Server {
                 }
                 let mut row = Args::new();
                 copy_present(&mut row, &item, &["id", "name", "state", "due"]);
-                let member_id = field_string(&item, &["idMember"]);
+                let member_id = object_string(&item, &["idMember"]);
                 if !member_id.is_empty() {
                     if index.is_none() {
                         index = Some(self.checklist_board_refs(args).load(self).await?.clone());
@@ -487,7 +487,7 @@ impl Server {
         if !checklist_name.is_empty() && !checklist_found {
             let mut names: Vec<String> = Vec::with_capacity(checklists.len());
             for checklist in &checklists {
-                let name = field_string(checklist, &["name"]);
+                let name = object_string(checklist, &["name"]);
                 if !names.contains(&name) {
                     names.push(name);
                 }
@@ -628,20 +628,6 @@ fn decode_base64(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
     engine.decode(data.replace(['\r', '\n'], ""))
 }
 
-fn field_string(object: &Args, path: &[&str]) -> String {
-    let mut current = match object.get(path[0]) {
-        Some(value) => value,
-        None => return String::new(),
-    };
-    if path.len() > 1 {
-        match nested_value(current, &path[1..]) {
-            Some(value) => current = value,
-            None => return String::new(),
-        }
-    }
-    current.as_str().unwrap_or("").to_string()
-}
-
 /// Returns current plus add, minus remove, without duplicates.
 pub(crate) fn apply_set(current: &[String], add: &[String], remove: &[String]) -> Vec<String> {
     let mut drop: std::collections::HashSet<&String> = remove.iter().collect();
@@ -660,8 +646,8 @@ pub(crate) fn custom_field_body(field: &Args, value: &str) -> Result<Value, Erro
     if value.is_empty() {
         return Ok(json!({"idValue": "", "value": ""}));
     }
-    let name = field_string(field, &["name"]);
-    match field_string(field, &["type"]).as_str() {
+    let name = object_string(field, &["name"]);
+    match object_string(field, &["type"]).as_str() {
         kind @ ("text" | "date") => Ok(json!({"value": {kind: value}})),
         "number" => {
             if let Err(err) = value.parse::<f64>() {
@@ -679,8 +665,8 @@ pub(crate) fn custom_field_body(field: &Args, value: &str) -> Result<Value, Erro
         "list" => {
             let mut options = Vec::new();
             for option in object_slice(field.get("options").unwrap_or(&Value::Null)) {
-                let label = field_string(&option, &["value", "text"]);
-                let id = field_string(&option, &["id"]);
+                let label = object_string(&option, &["value", "text"]);
+                let id = object_string(&option, &["id"]);
                 if id == value || label.to_lowercase() == value.to_lowercase() {
                     return Ok(json!({"idValue": id}));
                 }

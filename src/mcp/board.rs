@@ -7,16 +7,8 @@ use serde_json::{Value, json};
 
 use super::{
     Args, Error, Server, compact_objects, copy_present, escape, integer, msg, nested_string,
-    object_slice, string_slice, text,
+    object_slice, object_string, string_slice, text,
 };
-
-/// String field of an object, or "" (Go's `nestedString(item, key)`).
-fn field(item: &Args, key: &str) -> String {
-    item.get(key)
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string()
-}
 
 fn field_or_null(item: &Args, key: &str) -> Value {
     item.get(key).cloned().unwrap_or(Value::Null)
@@ -98,7 +90,7 @@ impl Refs {
         }
         let index = self.load(server).await?;
         let items = object_slice(index.get(kind).unwrap_or(&Value::Null));
-        Ok(field(&match_item(&items, kind, value)?, "id"))
+        Ok(object_string(&match_item(&items, kind, value)?, &["id"]))
     }
 
     pub(crate) async fn ids(
@@ -236,7 +228,7 @@ impl Server {
         let raw = if !list_arg.is_empty() {
             let (list_id, refs) = self.resolve_list(args, None).await?;
             if let Some(index) = refs.index {
-                indexes.insert(field(&index, "id"), index);
+                indexes.insert(object_string(&index, &["id"]), index);
             }
             self.client
                 .call(
@@ -265,7 +257,7 @@ impl Server {
         };
         let cards = object_slice(&raw);
         for card in &cards {
-            let board_id = field(card, "idBoard");
+            let board_id = object_string(card, &["idBoard"]);
             if let Entry::Vacant(slot) = indexes.entry(board_id) {
                 let index = self.board_index(slot.key()).await?;
                 slot.insert(index);
@@ -275,7 +267,9 @@ impl Server {
         let rows = cards
             .iter()
             .map(|card| {
-                let index = indexes.get(&field(card, "idBoard")).unwrap_or(&empty);
+                let index = indexes
+                    .get(&object_string(card, &["idBoard"]))
+                    .unwrap_or(&empty);
                 let mut row = Args::new();
                 row.insert("id".into(), field_or_null(card, "shortLink"));
                 row.insert("name".into(), field_or_null(card, "name"));
@@ -388,7 +382,7 @@ pub(crate) fn match_item(items: &[Args], kind: &str, value: &str) -> Result<Args
     let mut by_fallback: [Vec<&Args>; 2] = Default::default();
     let mut options = Vec::with_capacity(items.len());
     for item in items {
-        if field(item, "id") == value {
+        if object_string(item, &["id"]) == value {
             return Ok(item.clone());
         }
         let state = if closed(item) {
@@ -397,9 +391,11 @@ pub(crate) fn match_item(items: &[Args], kind: &str, value: &str) -> Result<Args
             options.push(display_name(kind, item));
             0
         };
-        if field(item, name_key).to_lowercase() == want {
+        if object_string(item, &[name_key]).to_lowercase() == want {
             by_name[state].push(item);
-        } else if !fallback_key.is_empty() && field(item, fallback_key).to_lowercase() == want {
+        } else if !fallback_key.is_empty()
+            && object_string(item, &[fallback_key]).to_lowercase() == want
+        {
             by_fallback[state].push(item);
         }
     }
@@ -426,12 +422,16 @@ pub(crate) fn match_item(items: &[Args], kind: &str, value: &str) -> Result<Args
 
 pub(crate) fn display_name(kind: &str, item: &Args) -> String {
     match kind {
-        "members" => format!("{} (@{})", field(item, "fullName"), field(item, "username")),
-        "labels" => match field(item, "name") {
-            name if name.is_empty() => field(item, "color"),
+        "members" => format!(
+            "{} (@{})",
+            object_string(item, &["fullName"]),
+            object_string(item, &["username"])
+        ),
+        "labels" => match object_string(item, &["name"]) {
+            name if name.is_empty() => object_string(item, &["color"]),
             name => name,
         },
-        _ => field(item, "name"),
+        _ => object_string(item, &["name"]),
     }
 }
 
@@ -441,11 +441,11 @@ pub(crate) fn names_of(index: &Args, kind: &str, ids: &Value) -> Vec<String> {
         .iter()
         .map(|item| {
             let name = if kind == "members" {
-                field(item, "fullName")
+                object_string(item, &["fullName"])
             } else {
                 display_name(kind, item)
             };
-            (field(item, "id"), name)
+            (object_string(item, &["id"]), name)
         })
         .collect();
     string_slice(ids)

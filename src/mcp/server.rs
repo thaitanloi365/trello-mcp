@@ -105,7 +105,7 @@ fn validate_kind(field: &FieldDefinition, value: &Value) -> Result<(), String> {
         Kind::Str => value.is_string(),
         Kind::Bool => value.is_boolean(),
         Kind::Integer => match value.as_f64() {
-            Some(number) if field.kind == Kind::Integer && number.trunc() != number => {
+            Some(number) if number.trunc() != number => {
                 return Err(format!("argument {:?} must be an integer", field.name));
             }
             Some(_) => true,
@@ -207,7 +207,7 @@ impl ServerHandler for Server {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         let Some(definition) = TOOLS.iter().find(|tool| tool.name == request.name) else {
             return Err(McpError::invalid_params(
@@ -219,7 +219,13 @@ impl ServerHandler for Server {
         if let Err(message) = validate_arguments(&definition.fields, &args) {
             return Ok(tool_error(message));
         }
-        Ok(match self.handle(definition.name, &args).await {
+        let result = tokio::select! {
+            result = self.handle(definition.name, &args) => result,
+            () = context.ct.cancelled() => {
+                return Err(McpError::internal_error("request cancelled", None));
+            }
+        };
+        Ok(match result {
             Ok(Output::Text(text)) => {
                 CallToolResult::success(vec![ContentBlock::text(text)]).into()
             }

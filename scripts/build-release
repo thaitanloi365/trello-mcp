@@ -30,7 +30,7 @@ if [ -e "$output_dir" ]; then
   exit 1
 fi
 
-actual_version=$(cargo run --quiet --release -- version)
+actual_version=$(cargo run --quiet --release --locked -- version)
 if [ "$actual_version" != "$release_version" ]; then
   echo "binary version is $actual_version, expected $release_version" >&2
   exit 1

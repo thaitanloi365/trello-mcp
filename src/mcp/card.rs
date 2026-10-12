@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use super::{
     Args, Error, Output, Server,
     board::{display_name, names_of},
-    escape, msg, nested_string, object_slice,
+    escape, msg, object_slice, object_string,
 };
 use crate::util;
 
@@ -68,10 +68,10 @@ impl Server {
             return Err(msg("Trello returned an invalid card response"));
         };
         // Checklist assignees need not be card members; name them from the board.
-        let board_path = format!("/boards/{}", escape(&ns(&object, &["idBoard"])));
+        let board_path = format!("/boards/{}", escape(&object_string(&object, &["idBoard"])));
         for checklist in object_slice(object.get("checklists").unwrap_or(&Value::Null)) {
             for item in object_slice(checklist.get("checkItems").unwrap_or(&Value::Null)) {
-                let member_id = ns(&item, &["idMember"]);
+                let member_id = object_string(&item, &["idMember"]);
                 if !member_id.is_empty()
                     && object.get("boardMembers").is_none_or(Value::is_null)
                     && names_of(&object, "members", &json!([member_id])).is_empty()
@@ -150,17 +150,6 @@ pub(crate) fn deliver_card(
     })))
 }
 
-/// `nested_string` over an object.
-fn ns(object: &Args, path: &[&str]) -> String {
-    match path.split_first() {
-        Some((first, rest)) => object
-            .get(*first)
-            .map(|value| nested_string(value, rest))
-            .unwrap_or_default(),
-        None => String::new(),
-    }
-}
-
 fn items(object: &Args, key: &str) -> Vec<Args> {
     object_slice(object.get(key).unwrap_or(&Value::Null))
 }
@@ -179,21 +168,21 @@ pub(crate) fn render_card_markdown(
             out.push_str(&format!("- {label}: {value}\n"));
         }
     };
-    out.push_str(&format!("# {}\n\n", ns(card, &["name"])));
-    let board = ns(card, &["board", "name"]);
+    out.push_str(&format!("# {}\n\n", object_string(card, &["name"])));
+    let board = object_string(card, &["board", "name"]);
     if !board.is_empty() {
         line(
             &mut out,
             "Board",
-            &format!("{board} (board {})", ns(card, &["idBoard"])),
+            &format!("{board} (board {})", object_string(card, &["idBoard"])),
         );
     }
-    line(&mut out, "List", &ns(card, &["list", "name"]));
+    line(&mut out, "List", &object_string(card, &["list", "name"]));
     if card.get("closed").and_then(Value::as_bool) == Some(true) {
         line(&mut out, "Status", "Archived");
     }
-    line(&mut out, "Start", &ns(card, &["start"]));
-    let mut due = ns(card, &["due"]);
+    line(&mut out, "Start", &object_string(card, &["start"]));
+    let mut due = object_string(card, &["due"]);
     if !due.is_empty() {
         if card.get("dueComplete").and_then(Value::as_bool) == Some(true) {
             due.push_str(" (done)");
@@ -217,50 +206,60 @@ pub(crate) fn render_card_markdown(
     line(&mut out, "Labels", &labels.join(", "));
     let mut member_names: HashMap<String, String> = HashMap::new();
     for member in items(card, "boardMembers") {
-        member_names.insert(ns(&member, &["id"]), ns(&member, &["fullName"]));
+        member_names.insert(
+            object_string(&member, &["id"]),
+            object_string(&member, &["fullName"]),
+        );
     }
     let mut members = Vec::new();
     for member in items(card, "members") {
         members.push(format!(
             "{} (@{})",
-            ns(&member, &["fullName"]),
-            ns(&member, &["username"])
+            object_string(&member, &["fullName"]),
+            object_string(&member, &["username"])
         ));
-        member_names.insert(ns(&member, &["id"]), ns(&member, &["fullName"]));
+        member_names.insert(
+            object_string(&member, &["id"]),
+            object_string(&member, &["fullName"]),
+        );
     }
     line(&mut out, "Members", &members.join(", "));
     let definitions: HashMap<String, &Args> = field_definitions
         .iter()
-        .map(|definition| (ns(definition, &["id"]), definition))
+        .map(|definition| (object_string(definition, &["id"]), definition))
         .collect();
     for item in items(card, "customFieldItems") {
-        let definition = definitions.get(&ns(&item, &["idCustomField"])).copied();
-        let name = definition.map(|d| ns(d, &["name"])).unwrap_or_default();
+        let definition = definitions
+            .get(&object_string(&item, &["idCustomField"]))
+            .copied();
+        let name = definition
+            .map(|d| object_string(d, &["name"]))
+            .unwrap_or_default();
         line(&mut out, &name, &custom_field_text(definition, &item));
     }
-    line(&mut out, "Link", &ns(card, &["shortUrl"]));
-    let description = ns(card, &["desc"]);
+    line(&mut out, "Link", &object_string(card, &["shortUrl"]));
+    let description = object_string(card, &["desc"]);
     if !description.is_empty() {
         out.push_str(&format!("\n## Description\n\n{description}\n"));
     }
     for checklist in items(card, "checklists") {
         out.push_str(&format!(
             "\n## {} (checklist {})\n\n",
-            ns(&checklist, &["name"]),
-            ns(&checklist, &["id"])
+            object_string(&checklist, &["name"]),
+            object_string(&checklist, &["id"])
         ));
         for item in items(&checklist, "checkItems") {
-            let mark = if ns(&item, &["state"]) == "complete" {
+            let mark = if object_string(&item, &["state"]) == "complete" {
                 "x"
             } else {
                 " "
             };
-            let mut details = format!("item {}", ns(&item, &["id"]));
-            let due = ns(&item, &["due"]);
+            let mut details = format!("item {}", object_string(&item, &["id"]));
+            let due = object_string(&item, &["due"]);
             if !due.is_empty() {
                 details.push_str(&format!(", due {due}"));
             }
-            let member_id = ns(&item, &["idMember"]);
+            let member_id = object_string(&item, &["idMember"]);
             if !member_id.is_empty() {
                 let name = match member_names.get(&member_id) {
                     Some(name) if !name.is_empty() => name.clone(),
@@ -270,7 +269,7 @@ pub(crate) fn render_card_markdown(
             }
             out.push_str(&format!(
                 "- [{mark}] {} ({details})\n",
-                ns(&item, &["name"])
+                object_string(&item, &["name"])
             ));
         }
     }
@@ -280,9 +279,9 @@ pub(crate) fn render_card_markdown(
         for attachment in attachments {
             out.push_str(&format!(
                 "- [{}]({}) (attachment {})\n",
-                ns(&attachment, &["name"]),
-                ns(&attachment, &["url"]),
-                ns(&attachment, &["id"])
+                object_string(&attachment, &["name"]),
+                object_string(&attachment, &["url"]),
+                object_string(&attachment, &["id"])
             ));
         }
     }
@@ -295,16 +294,16 @@ pub(crate) fn render_card_markdown(
             ));
         }
         for comment in comments {
-            let mut author = ns(&comment, &["memberCreator", "fullName"]);
-            let username = ns(&comment, &["memberCreator", "username"]);
+            let mut author = object_string(&comment, &["memberCreator", "fullName"]);
+            let username = object_string(&comment, &["memberCreator", "username"]);
             if !username.is_empty() {
                 author.push_str(&format!(" (@{username})"));
             }
             out.push_str(&format!(
                 "\n### {author}, {} (comment {})\n\n{}\n",
-                ns(&comment, &["date"]),
-                ns(&comment, &["id"]),
-                ns(&comment, &["data", "text"])
+                object_string(&comment, &["date"]),
+                object_string(&comment, &["id"]),
+                object_string(&comment, &["data", "text"])
             ));
         }
     }
@@ -312,16 +311,16 @@ pub(crate) fn render_card_markdown(
 }
 
 fn custom_field_text(definition: Option<&Args>, item: &Args) -> String {
-    let option_id = ns(item, &["idValue"]);
+    let option_id = object_string(item, &["idValue"]);
     if !option_id.is_empty() {
         for option in definition.map(|d| items(d, "options")).unwrap_or_default() {
-            if ns(&option, &["id"]) == option_id {
-                return ns(&option, &["value", "text"]);
+            if object_string(&option, &["id"]) == option_id {
+                return object_string(&option, &["value", "text"]);
             }
         }
     }
     for key in ["text", "number", "date", "checked"] {
-        let text = ns(item, &["value", key]);
+        let text = object_string(item, &["value", key]);
         if !text.is_empty() {
             return text;
         }

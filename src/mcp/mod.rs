@@ -106,6 +106,17 @@ pub(crate) fn nested_string(value: &Value, path: &[&str]) -> String {
         .to_string()
 }
 
+/// String at `path` inside an object, or "".
+pub(crate) fn object_string(object: &Args, path: &[&str]) -> String {
+    match path.split_first() {
+        Some((first, rest)) => object
+            .get(*first)
+            .map(|value| nested_string(value, rest))
+            .unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
 pub(crate) fn object_slice(value: &Value) -> Vec<Args> {
     value
         .as_array()

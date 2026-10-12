@@ -29,7 +29,7 @@ pub enum Error {
         status: u16,
         message: String,
     },
-    #[error("call Trello {method} {path}: {cause}")]
+    #[error("call Trello {method} {path}: {}", chain(cause))]
     Transport {
         method: Method,
         path: String,
@@ -37,6 +37,18 @@ pub enum Error {
     },
     #[error("{0}")]
     Message(String),
+}
+
+/// Joins an error with its sources; reqwest's Display alone omits the cause.
+fn chain(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
 }
 
 fn message(text: impl Into<String>) -> Error {
@@ -129,7 +141,10 @@ impl Client {
                         .file_name(name.to_string())
                         .mime_str("application/octet-stream")
                         .map_err(|err| {
-                            message(format!("create attachment form: {}", err.without_url()))
+                            message(format!(
+                                "create attachment form: {}",
+                                chain(&err.without_url())
+                            ))
                         })?;
                     request.multipart(reqwest::multipart::Form::new().part("file", part))
                 }
@@ -283,7 +298,12 @@ impl Client {
             .header(header::USER_AGENT, version::USER_AGENT)
             .send()
             .await
-            .map_err(|err| message(format!("download Trello attachment: {}", err.without_url())))?;
+            .map_err(|err| {
+                message(format!(
+                    "download Trello attachment: {}",
+                    chain(&err.without_url())
+                ))
+            })?;
         let status = response.status();
         if !status.is_success() {
             return Err(Error::Api {
@@ -312,7 +332,7 @@ impl Client {
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|err| message(format!("write attachment: {}", err.without_url())))?
+            .map_err(|err| message(format!("write attachment: {}", chain(&err.without_url()))))?
         {
             written += chunk.len() as i64;
             if written > limit {
@@ -455,11 +475,12 @@ fn query_value(value: &Value) -> Option<String> {
 
 async fn read_limited(mut response: reqwest::Response) -> Result<Vec<u8>, Error> {
     let mut data = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|err| message(format!("read Trello response: {}", err.without_url())))?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|err| {
+        message(format!(
+            "read Trello response: {}",
+            chain(&err.without_url())
+        ))
+    })? {
         data.extend_from_slice(&chunk);
         if data.len() > MAX_RESPONSE_BYTES {
             return Err(message("Trello response exceeded 16 MiB limit"));
@@ -638,6 +659,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.starts_with("call Trello POST /cards: "), "{err}");
+        assert!(err.contains("Connection refused"), "{err}");
         assert!(
             !err.contains("test-key") && !err.contains("test-token"),
             "{err}"
