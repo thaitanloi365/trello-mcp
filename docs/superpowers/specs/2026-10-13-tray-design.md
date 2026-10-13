@@ -191,6 +191,8 @@ expandable details. There is no dialog: it would take focus from the non-activat
 - **Measured (installed tray, 2026-10-13):**
   - closed: 26 MB `phys_footprint`, CPU 0.0% (`ps`, and `top` over 4 samples 2 s apart); claude-usage's
     tray measured 32 MB and 0.0% on the same Mac;
+  - closed with minute scans: CPU time unchanged at `ps`'s 10 ms resolution over 125 s (under
+    0.01%), 16 MB `phys_footprint` before the first open;
   - open with 11 servers and one row expanded (before the gws-mcp layout): 0.14% CPU over 20 s (1.85-2.42 ms per sample and tick), 26-27 MB,
     measured with a driver that runs the tray's own sample and tick code.
 
