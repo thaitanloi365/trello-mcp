@@ -6,6 +6,11 @@ AGENT       := com.trellomcp.tray
 AGENT_PLIST := $(HOME)/Library/LaunchAgents/$(AGENT).plist
 APP_DIR     := $(HOME)/Applications
 SELFTEST    := $(or $(TMPDIR),/tmp)/$(TRAY)-selftest
+# Login Items shows the app's name and icon only for a team-signed agent (an
+# ad-hoc one shows as "exec"): sign with TEAM's Apple Development identity, as
+# gws-mcp does. "-" (ad-hoc) when this Mac has none.
+TEAM        ?= S36W2NCK97
+SIGN_ID     ?= $(or $(shell security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development: .*\)"$$/\1/p' | while read -r n; do security find-certificate -c "$$n" -p 2>/dev/null | openssl x509 -noout -subject 2>/dev/null | grep -q "OU=$(TEAM)" && { echo "$$n"; break; }; done),-)
 
 .PHONY: install build test lint fmt check release clean tray tray-test icon tray-install tray-uninstall
 
@@ -43,5 +48,21 @@ clean:
 
 # No XCTest target; the tray's pure parts and libproc calls are checked behind -D SELFTEST, as in claude-usage.
 tray-test: ## check the tray's rules, text, libproc calls and stop path
-	swiftc -D SELFTEST -suppress-warnings $(wildcard $(TRAY_SRC)) -o $(SELFTEST)
+	swiftc -D SELFTEST -suppress-warnings $(TRAY_SRC) -o $(SELFTEST)
 	$(SELFTEST)
+
+tray: ## build dist/Trello MCP.app (macOS)
+	rm -rf "dist/$(APP)"
+	mkdir -p "dist/$(APP)/Contents/MacOS" "dist/$(APP)/Contents/Resources"
+	swiftc -O $(TRAY_SRC) -o "dist/$(APP)/Contents/MacOS/$(TRAY)"
+	cp tray/Info.plist "dist/$(APP)/Contents/Info.plist"
+	cp tray/AppIcon.icns "dist/$(APP)/Contents/Resources/"
+	codesign --force -s "$(SIGN_ID)" "dist/$(APP)"
+
+icon: ## render tray/AppIcon.icns from tray/AppIcon.svg (needs rsvg-convert)
+	rm -rf dist/AppIcon.iconset && mkdir -p dist/AppIcon.iconset
+	for s in 16 32 128 256 512; do \
+		rsvg-convert -w $$s -h $$s tray/AppIcon.svg -o dist/AppIcon.iconset/icon_$${s}x$${s}.png; \
+		rsvg-convert -w $$((s * 2)) -h $$((s * 2)) tray/AppIcon.svg -o dist/AppIcon.iconset/icon_$${s}x$${s}@2x.png; \
+	done
+	iconutil -c icns dist/AppIcon.iconset -o tray/AppIcon.icns

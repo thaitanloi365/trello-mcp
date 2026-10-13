@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- App icon for Login Items and Finder: the board mark (three columns hanging from the top, as in the menu bar) on Apple's 824 px icon grid. `make icon` renders AppIcon.icns from it. -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#111"/>
+  <g fill="#fff">
+    <rect x="262" y="262" width="125" height="500"/>
+    <rect x="450" y="262" width="125" height="325"/>
+    <rect x="637" y="262" width="125" height="400"/>
+  </g>
+</svg>

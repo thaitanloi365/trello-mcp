@@ -5,6 +5,22 @@
 // ~/Library/Logs/trello-mcp-tray.log.
 import AppKit
 
+let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/trello-mcp-tray.log")
+
+/// Menu bar icon: the board mark as a template image, so it follows the menu bar's light and dark.
+func boardImage() -> NSImage {
+    let h: CGFloat = 14, w = h / 4, gap = h / 8
+    let img = NSImage(size: NSSize(width: 3 * w + 2 * gap, height: h), flipped: false) { _ in
+        NSColor.black.setFill()
+        for (i, k) in boardColumns.enumerated() {
+            NSBezierPath(rect: NSRect(x: CGFloat(i) * (w + gap), y: h * (1 - k), width: w, height: h * k)).fill()   // hang from the top
+        }
+        return true
+    }
+    img.isTemplate = true
+    return img
+}
+
 #if SELFTEST
 // The fake server below is this binary copied as trello-mcp: copies of system binaries (arm64e) are killed on launch.
 if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "serve" { while true { sleep(60) } }
@@ -152,6 +168,162 @@ stubborn.waitUntilExit()
 precondition(answered && stubborn.terminationReason == .uncaughtSignal && stubborn.terminationStatus == SIGKILL, "SIGKILL after the grace period")
 try? FileManager.default.removeItem(at: dir)
 
+// Menu bar icon and panel rendering (no window: sizes only).
+precondition(boardImage().isTemplate && boardImage().size == NSSize(width: 14, height: 14), "menu bar icon: \(boardImage().size)")
+_ = NSApplication.shared
+let pm = PanelModel(), pc = PanelController(pm)
+func panelSize() -> NSSize { pc.render(); return pc.view.subviews.first?.fittingSize ?? .zero }
+pm.stats = trayStats(cpu: 0.1, mem: 21 << 20)
+pm.rows = rs
+pm.open = rs[1].id
+pm.error = stopFailure(20, EPERM)
+precondition(panelSize().width == 360, "panel with rows, an open row and an error: \(panelSize())")
+let wide = Proc(id: ServerID(pid: 99999, start: t0), ppid: 500, parent: "claude", folder: "/Users/me/" + String(repeating: "very_long_project_name_", count: 3),
+                binary: "/Users/me/bin/trello-mcp", config: nil, cpuNs: 0, mem: 1229 << 20)
+pm.rows = rows([wide], cpu: [wide.id: 143.2], stopping: [], home: h)
+precondition(panelSize().width == 360, "long label, 143% and 1.2 GB keep the width: \(panelSize())")
+pm.rows = (1...40).map { i in Row(proc: proc(pid_t(1000 + i), "/Users/me/P/project\(i)", start: t0 + UInt64(i)), label: "project\(i)", cpu: 0, status: .idle) }
+pm.cap = 400
+precondition(panelSize().height < 400 + 220, "40 rows scroll inside the cap: \(panelSize())")
+pm.rows = []
+pm.error = nil
+precondition(panelSize().width == 360, "empty state")
+pc.view.appearance = NSAppearance(named: .darkAqua)
+pm.rows = rs
+precondition(panelSize().width == 360, "dark")
+
 print("tray selftest ok")
 exit(0)
 #endif
+
+/// The panel's window, under the status item. Borderless, not an NSPopover: the popover's window
+/// alone took 13 MB in claude-usage. Esc, a click elsewhere or another app taking the keyboard
+/// closes it. Non-activating: macOS refuses to activate a menu bar app on a status item click, so
+/// the panel takes the keyboard without activation, and must not hide while the app is inactive.
+final class PanelWindow: NSPanel {
+    var onClose: () -> Void = {}
+    override var canBecomeKey: Bool { true }
+    override func resignKey() { super.resignKey(); onClose() }
+    override func cancelOperation(_ sender: Any?) { onClose() }
+}
+
+final class Tray: NSObject, NSApplicationDelegate {
+    var item: NSStatusItem!
+    let model = PanelModel()
+    lazy var panel = PanelController(model)
+    let window = PanelWindow(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+    let scanner = Scanner()
+    var clicks: Any?            // watches clicks in other apps while the panel shows
+    var timer: Timer?           // the next sample, only while the panel shows
+    var last: [ServerID: (cpu: UInt64, at: TimeInterval)] = [:]    // each server's previous sample
+    var mine: (cpu: UInt64, at: TimeInterval)?                      // the tray's own previous sample
+    var stopping: Set<ServerID> = []
+
+    func applicationDidFinishLaunching(_ n: Notification) {
+        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.image = boardImage()
+        item.button?.toolTip = "Trello MCP"
+        item.button?.setAccessibilityLabel("Trello MCP")
+        item.button?.target = self
+        item.button?.action = #selector(togglePanel)
+        model.onStop = { [unowned self] in stopServer($0) }
+        model.onLog = { [unowned self] in closePanel(); NSWorkspace.shared.open(logURL) }
+        model.onQuit = { exit(0) }      // exit 0: the LaunchAgent leaves it down until the next login
+        window.contentViewController = panel
+        window.level = .popUpMenu
+        window.hasShadow = true
+        window.hidesOnDeactivate = false
+        window.isReleasedWhenClosed = false
+        window.onClose = { [unowned self] in closePanel() }
+    }
+
+    @objc func togglePanel() { if window.isVisible { closePanel() } else { openPanel() } }
+
+    func openPanel() {
+        guard let b = item.button, let bar = b.window else { return }
+        let r = bar.convertToScreen(b.convert(b.bounds, to: nil)), vis = (bar.screen ?? NSScreen.main)?.visibleFrame ?? .zero
+        model.cap = vis.height - 160    // room for header and footer
+        last = [:]                      // CPU since the panel last closed would be a stale average
+        mine = nil
+        sample()
+        panel.render()                  // sizes the window
+        let s = window.frame.size
+        window.setFrameOrigin(NSPoint(x: min(max(r.midX - s.width / 2, vis.minX), vis.maxX - s.width), y: bar.frame.minY - s.height))
+        window.makeKeyAndOrderFront(nil)
+        // The status item's own clicks reach us as global events; its action does the toggling.
+        clicks = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [unowned self] e in
+            if !r.contains(e.locationInWindow) { closePanel() }
+        }
+        sampleAgain(after: 0.5)         // CPU needs a second sample: show it almost at once
+    }
+
+    /// Samples after `delay`, then every 2 s while the panel shows. The tolerance lets macOS batch wakeups.
+    func sampleAgain(after delay: TimeInterval) {
+        let t = Timer(timeInterval: delay, repeats: false) { [unowned self] _ in
+            sample()
+            sampleAgain(after: 2)
+        }
+        t.tolerance = 0.2
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    func closePanel() {
+        guard window.isVisible else { return }
+        window.orderOut(nil)
+        if let c = clicks { NSEvent.removeMonitor(c) }
+        clicks = nil
+        timer?.invalidate()
+        timer = nil
+        model.error = nil
+        model.open = nil
+    }
+
+    /// Reads the servers and the tray's own usage and hands them to the panel.
+    func sample() {
+        let at = ProcessInfo.processInfo.systemUptime
+        let procs = scanner.scan()
+        var cpu: [ServerID: Double] = [:], next: [ServerID: (cpu: UInt64, at: TimeInterval)] = [:]
+        for p in procs {
+            next[p.id] = (p.cpuNs, at)
+            cpu[p.id] = cpuPercent(last[p.id], (p.cpuNs, at))
+        }
+        last = next
+        stopping.formIntersection(next.keys)    // a stopped server that is gone is done stopping
+        model.rows = rows(procs, cpu: cpu, stopping: stopping, home: userHome)
+        if let u = usage(of: getpid()) {
+            model.stats = trayStats(cpu: cpuPercent(mine, (u.cpu, at)), mem: u.mem)
+            mine = (u.cpu, at)
+        }
+    }
+
+    func stopServer(_ r: Row) {
+        guard !stopping.contains(r.id) else { return }
+        stopping.insert(r.id)
+        model.error = nil
+        sample()
+        NSLog("stopping trello-mcp PID \(r.id.pid) (\(r.label))")
+        stop(r.id, name: serverName) { [unowned self] fail in
+            if let fail {
+                stopping.remove(r.id)
+                NSLog(fail)
+                show(error: fail)
+            }
+            if window.isVisible { sample() }
+        }
+    }
+
+    /// Shows a failure in the panel; reopens it if a click elsewhere already closed it, so it is seen once.
+    func show(error: String) {
+        if !window.isVisible { openPanel() }
+        model.error = error
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: error, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+    }
+}
+
+let app = NSApplication.shared
+let tray = Tray()
+app.delegate = tray
+app.setActivationPolicy(.accessory)
+app.run()
