@@ -25,8 +25,8 @@ servers at once, Linux and Windows.
   buttons, status squares, Threshold Rule). The tray uses it as is; this repo gets no DESIGN.md.
 - Panel technique and building blocks:
   `/Users/loithai/Projects/ai-tools/claude-usage/tray/Panel.swift` and `tray/main.swift`
-  (`Pal`, `hvFont`, `label`, `vstack`/`hstack`, `block`, `Press`, `btn`, `txtBtn`, `spinner`,
-  `PanelWindow`, `usage(of:)`, `cpuPercent`). Copy what the panel uses; leave out the rest.
+  (`Pal`, `hvFont`, `label`, `vstack`/`hstack`, `block`, `Press`, `txtBtn`, `PanelWindow`,
+  `usage(of:)`). Copy what the panel uses; leave out the rest.
 - Packaging: claude-usage's and gws-mcp's Makefiles (team signing, `make icon`, LaunchAgent).
 
 ## Files
@@ -45,7 +45,7 @@ servers at once, Linux and Windows.
 Every scan runs these steps on one serial background queue, one scan at a time (a tick that finds
 one running is skipped); the result is applied on the main queue. The scanner is not thread-safe, so
 only that queue touches it. A scan takes a few milliseconds (about 2,000 pids on this Mac). What
-never changes for a process (its binary, and its parent's name, start time and folder) is read once
+never changes for a process (its binary, and its parent's start time and folder) is read once
 per (pid, start time) and cached. A tick reads only names, parents and usage.
 
 1. `proc_listpids(PROC_UID_ONLY, getuid())`: only this user's processes, which are also the only
@@ -65,7 +65,6 @@ per (pid, start time) and cached. A tick reads only names, parents and usage.
    - `proc_pidpath`: binary path.
    - `proc_pid_rusage(RUSAGE_INFO_V2)`: CPU time (Mach ticks converted to ns) and
      `ri_phys_footprint`, the memory figure Activity Monitor shows.
-   - The parent's name from its argv[0], such as `claude` or `codex`.
 
 A server is identified by (pid, start time), so a reused PID never inherits another server's
 history or a Stop click.
@@ -87,14 +86,16 @@ Ported from gws-mcp's tray (`Servers.swift`).
 - **Group meta:** `N sessions · memory`, `1 session · 10 MB`, or only the memory under `No session`.
   A session is a distinct (parent pid, parent start time).
 - **BUILD:** `installed` when the server's binary is the tray's CLI (`--cli <path>`, passed by the
-  LaunchAgent; without it nothing matches); the worktree's name for a binary under
+  LaunchAgent and resolved through symlinks, as `proc_pidpath` reports binaries; without it
+  nothing matches); the worktree's name for a binary under
   `/.claude/worktrees/`; else the last two folders of the binary's path. The row's tooltip is the
   full binary path.
 - **UP:** the session's age, from the parent's start time: `3d 9h`, `2h 0m`, `45m`; `—` without a session.
 - **ACTIVE:** the last scan in which the server used at least 2 ms of CPU: `now` under a minute,
   `12m ago`, `3h ago`, `2d ago`; `—` until seen. The panel keeps it across closes and reopens by
   (pid, start time), but never counts the CPU of a closed period (the first scan after opening has
-  no baseline).
+  no baseline). If the server used 2 ms or more while the panel was closed, ACTIVE shows `—`: it
+  worked, but when is unknown.
 - **CPU:** percent of one core between two scans, `—` before the second. `0.6%`, `143%` from 100.
   No threshold colors.
 - **Memory text:** `8.2 MB` under 10 MB, `49 MB` from 10 MB, `1.2 GB` from 1024 MB.

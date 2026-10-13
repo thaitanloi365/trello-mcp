@@ -42,6 +42,7 @@ precondition(parseProcArgs(withUnsafeBytes(of: Int32(1)) { Array($0) } + Array("
 
 // The CLI path from the LaunchAgent: none by default, so "installed" never matches.
 precondition(cliPath(["tray", "--cli", "/x/trello-mcp"]) == "/x/trello-mcp" && cliPath(["tray"]) == "" && cliPath(["tray", "--cli"]) == "", "--cli")
+precondition(realPath("/tmp") == "/private/tmp" && realPath("") == "" && realPath("/no/such/file") == "/no/such/file", "--cli resolves symlinks: \(realPath("/tmp"))")
 
 // Servers: scans, activity, groups.
 let h = "/Users/me"
@@ -50,7 +51,7 @@ let s0: UInt64 = 1_791_800_000_000_000     // a start time in µs
 let ps0: UInt64 = 1_791_700_000_000_000    // a session's start time
 func srv(_ pid: pid_t, cpu: UInt64 = 0, folder: String? = "/Users/me/work/app", ppid: pid_t = 900, parentStarted: UInt64? = ps0,
          start: UInt64 = s0, mem: UInt64 = 10 << 20, path: String = "/x/trello-mcp") -> ServerSample {
-    ServerSample(id: ServerID(pid: pid, start: start), ppid: ppid, parent: "claude", parentStarted: parentStarted, folder: folder,
+    ServerSample(id: ServerID(pid: pid, start: start), ppid: ppid, parentStarted: parentStarted, folder: folder,
                  path: path, cpuNs: cpu, mem: mem)
 }
 precondition(activeCPU == 2_000_000, "active threshold")
@@ -64,6 +65,8 @@ let r4 = advance(r3, [srv(1, cpu: 4_000_000)], prevAt: t0 + 4, at: t0 + 64)
 precondition(r4[0].lastActive == t0 + 4 && r4[0].cpu == 0, "activity is remembered")
 let r5 = advance(r4, [srv(1, cpu: 4_000_000)], prevAt: nil, at: t0 + 9000)
 precondition(r5[0].lastActive == t0 + 4 && r5[0].cpu == nil, "a panel reopened: no CPU from a stale baseline, activity kept")
+let r6 = advance(r4, [srv(1, cpu: 4_000_000 + activeCPU)], prevAt: nil, at: t0 + 9000)
+precondition(r6[0].lastActive == nil && r6[0].cpu == nil, "worked while the panel was closed: when is unknown")
 let reused = advance(r4, [srv(1, cpu: 9_000_000, start: s0 + 1)], prevAt: t0 + 64, at: t0 + 66)
 precondition(reused[0].lastActive == nil && reused[0].cpu == nil, "a reused pid starts fresh")
 precondition(advance(r4, [], prevAt: t0 + 64, at: t0 + 66).isEmpty, "gone servers drop out")
@@ -182,7 +185,7 @@ for _ in 0..<100 where found == nil {
 }
 guard let f = found else { fatalError("the fake server is found") }
 precondition(f.path.hasSuffix("/tray selftest \(getpid())/trello-mcp"), "binary path with a space: \(f)")
-precondition(f.ppid == getpid() && f.parent.hasPrefix("trello-mcp-tray") && f.mem > 0, "parent, memory: \(f)")
+precondition(f.ppid == getpid() && f.mem > 0, "parent, memory: \(f)")
 precondition(f.parentStarted == bsdInfo(getpid())?.start && f.folder == FileManager.default.currentDirectoryPath,
              "its session is this process: start and folder are the parent's, not the server's (\(dir.path)): \(f)")
 var t = Date()
@@ -324,7 +327,7 @@ final class Tray: NSObject, NSApplicationDelegate {
         item.button?.setAccessibilityLabel("Trello MCP")
         item.button?.target = self
         item.button?.action = #selector(togglePanel)
-        model.cli = cliPath(CommandLine.arguments)
+        model.cli = realPath(cliPath(CommandLine.arguments))
         model.onStop = { [unowned self] in stopServer($0) }
         model.onLog = { [unowned self] in closePanel(); NSWorkspace.shared.open(logURL) }
         model.onQuit = { exit(0) }      // exit 0: the LaunchAgent leaves it down until the next login
@@ -420,8 +423,8 @@ final class Tray: NSObject, NSApplicationDelegate {
         model.stopping.insert(id)
         model.error = nil
         stop(id, name: serverName) { [unowned self] fail in
-            model.stopping.remove(id)
             if let fail {
+                model.stopping.remove(id)       // on success the next scan clears it once the server is gone
                 NSLog(fail)
                 show(error: fail)
             }

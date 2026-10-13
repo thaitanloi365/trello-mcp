@@ -10,15 +10,12 @@ let userHome = FileManager.default.homeDirectoryForCurrentUser.path
 struct ServerID: Hashable {
     let pid: pid_t
     let start: UInt64   // µs since 1970
-
-    var started: Date { Date(timeIntervalSince1970: Double(start) / 1e6) }
 }
 
 /// One server as a scan sees it.
 struct ServerSample: Equatable {
     let id: ServerID
     let ppid: pid_t
-    let parent: String          // the parent's name (basename of its argv[0]), "" when unknown
     let parentStarted: UInt64?  // the session's start time (µs); nil: no session (parent is launchd or gone)
     let folder: String?         // the session's working folder
     let path: String            // the binary
@@ -74,13 +71,15 @@ func parseProcArgs(_ b: [UInt8]) -> [String]? {
 let activeCPU: UInt64 = 2_000_000
 
 /// Folds a scan into the rows: history carries over by ServerID, gone servers drop out. Without an
-/// earlier scan (the first, or the panel just reopened) there is no CPU figure, but the last
-/// activity is kept.
+/// earlier scan (the first, or the panel just reopened) there is no CPU figure; the last activity
+/// is kept unless the server worked while the panel was closed, when its time is unknown.
 func advance(_ old: [ServerRow], _ scan: [ServerSample], prevAt: Date?, at: Date) -> [ServerRow] {
     let byID = Dictionary(old.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
     return scan.map { s in
         guard let o = byID[s.id] else { return ServerRow(s: s, cpu: nil, lastActive: nil) }
-        guard let prevAt, at > prevAt else { return ServerRow(s: s, cpu: nil, lastActive: o.lastActive) }
+        guard let prevAt, at > prevAt else {
+            return ServerRow(s: s, cpu: nil, lastActive: s.cpuNs < o.s.cpuNs + activeCPU ? o.lastActive : nil)
+        }
         let d = s.cpuNs > o.s.cpuNs ? s.cpuNs - o.s.cpuNs : 0
         return ServerRow(s: s, cpu: Double(d) / 1e9 / at.timeIntervalSince(prevAt) * 100, lastActive: d >= activeCPU ? at : o.lastActive)
     }
@@ -188,6 +187,14 @@ func cliPath(_ args: [String]) -> String {
     return ""
 }
 
+/// `p` with symlinks resolved, as proc_pidpath reports binaries; `p` when it does not exist.
+/// realpath, not URL.resolvingSymlinksInPath, which drops a leading /private.
+func realPath(_ p: String) -> String {
+    guard !p.isEmpty, let r = realpath(p, nil) else { return p }
+    defer { free(r) }
+    return String(cString: r)
+}
+
 // MARK: - libproc
 
 /// CPU times come in Mach ticks, not ns, on Apple silicon.
@@ -257,10 +264,10 @@ func usage(of pid: pid_t) -> (cpu: UInt64, mem: UInt64)? {
 }
 
 /// Finds and measures the running servers. What never changes for a process (its binary and its
-/// parent's name, start time and folder) is read once, so a tick reads only names and usage.
+/// parent's start time and folder) is read once, so a tick reads only names, parents and usage.
 /// Not thread-safe: the tray runs it on one serial queue, one scan at a time.
 final class Scanner {
-    private struct Fixed { let path: String; let parent: String; let ppid: pid_t; let parentStarted: UInt64?; let folder: String? }
+    private struct Fixed { let path: String; let ppid: pid_t; let parentStarted: UInt64?; let folder: String? }
     private var fixed: [ServerID: Fixed] = [:]
     private var others: Set<ServerID> = []      // trello-mcp processes that are not servers
 
@@ -277,16 +284,13 @@ final class Scanner {
                 guard isServer(argv) else { nextOthers.insert(id); continue }
                 // The session is the parent; launchd (1) or a parent that is gone means none.
                 let session = b.ppid > 1 ? bsdInfo(b.ppid) : nil
-                f = Fixed(path: path(of: pid) ?? argv.first ?? serverName,
-                          // argv[0], not proc_name: Claude Code's executable file is named after its version
-                          parent: args(of: b.ppid)?.first.map { ($0 as NSString).lastPathComponent } ?? procName(b.ppid) ?? "",
-                          ppid: b.ppid, parentStarted: session?.start, folder: session == nil ? nil : folder(of: b.ppid))
+                f = Fixed(path: path(of: pid) ?? argv.first ?? serverName, ppid: b.ppid, parentStarted: session?.start, folder: session == nil ? nil : folder(of: b.ppid))
             }
             guard let f, let u = usage(of: pid) else { continue }
             nextFixed[id] = f
             // A server whose parent exited is adopted by launchd: it has no session from then on.
             let session = b.ppid == f.ppid
-            out.append(ServerSample(id: id, ppid: b.ppid, parent: f.parent, parentStarted: session ? f.parentStarted : nil,
+            out.append(ServerSample(id: id, ppid: b.ppid, parentStarted: session ? f.parentStarted : nil,
                                     folder: session ? f.folder : nil, path: f.path, cpuNs: u.cpu, mem: u.mem))
         }
         fixed = nextFixed

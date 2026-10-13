@@ -187,8 +187,8 @@ final class Press: NSButton {
     private var hover = false, down = false
     private lazy var fit = content.fittingSize
 
-    /// `pad` is (leading, trailing). `fill` stretches `content` across; otherwise it sits in the middle.
-    init(_ content: NSView, pad: (CGFloat, CGFloat) = (0, 0), minHeight: CGFloat = 0, fill: Bool = false, _ act: @escaping () -> Void) {
+    /// `pad` is (leading, trailing); `content` sits in the middle.
+    init(_ content: NSView, pad: (CGFloat, CGFloat) = (0, 0), minHeight: CGFloat = 0, _ act: @escaping () -> Void) {
         self.content = content
         self.pad = pad
         self.minHeight = minHeight
@@ -205,13 +205,9 @@ final class Press: NSButton {
         NSLayoutConstraint.activate([
             content.centerYAnchor.constraint(equalTo: centerYAnchor),
             content.topAnchor.constraint(greaterThanOrEqualTo: topAnchor),
-        ] + (fill ? [
-            content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: pad.0),
-            content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad.1),
-        ] : [
             content.centerXAnchor.constraint(equalTo: centerXAnchor, constant: (pad.0 - pad.1) / 2),
             content.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: pad.0),
-        ]))
+        ])
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
