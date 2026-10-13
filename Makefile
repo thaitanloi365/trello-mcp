@@ -62,7 +62,7 @@ tray: ## build dist/Trello MCP.app (macOS)
 	codesign --force -s "$(SIGN_ID)" "dist/$(APP)"
 
 tray-install: tray ## run the menu bar app now and at every login (macOS)
-	sed -e 's|@HOME@|$(HOME)|g' tray/$(AGENT).plist > $(AGENT).plist.tmp
+	sed -e 's|@HOME@|$(HOME)|g' -e 's|@CLI@|$(CURDIR)/bin/trello-mcp|g' tray/$(AGENT).plist > $(AGENT).plist.tmp
 	plutil -lint $(AGENT).plist.tmp
 	@$(stop-agent)
 	mkdir -p "$(APP_DIR)" "$(HOME)/Library/LaunchAgents"

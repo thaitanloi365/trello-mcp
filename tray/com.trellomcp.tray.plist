@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Rendered into ~/Library/LaunchAgents by `make tray-install`; @HOME@ is filled in there. -->
+<!-- Rendered into ~/Library/LaunchAgents by `make tray-install`; @HOME@ and @CLI@ are filled in there. -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
@@ -8,6 +8,9 @@
 	<key>ProgramArguments</key>
 	<array>
 		<string>@HOME@/Applications/Trello MCP.app/Contents/MacOS/trello-mcp-tray</string>
+		<!-- The CLI this checkout installs: its servers show "installed" in the Build column. -->
+		<string>--cli</string>
+		<string>@CLI@</string>
 	</array>
 	<!-- Login Items names this agent after the app, with its icon. -->
 	<key>AssociatedBundleIdentifiers</key>
