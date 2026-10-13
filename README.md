@@ -216,6 +216,21 @@ Credentials remain in trello-mcp's `0600` config file, so they do not need to
 be duplicated in any client configuration. Environment variables remain
 available for secret-manager and container workflows.
 
+## Menu bar app (macOS)
+
+Trello MCP is a menu bar app that lists every running trello-mcp server: the project folder its
+client started it in, CPU and memory (as Activity Monitor counts them), status and uptime. Click a
+row for its binary, config and parent client, and to stop it. ORPHANED marks a server whose client
+has exited.
+
+It reads processes only while its panel is open (libproc, every 2 s; no `ps`) and sits idle
+otherwise.
+
+    make tray-install     # build dist/Trello MCP.app, install it to ~/Applications, start it now and at login
+    make tray-uninstall   # stop it and remove the login item and the app
+
+Log: `~/Library/Logs/trello-mcp-tray.log`. `make tray-test` runs its selftest.
+
 ## Tools
 
 28 tools, built for an AI reader: few tools, names instead of IDs, and short

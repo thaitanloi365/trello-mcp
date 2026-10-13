@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Rendered into ~/Library/LaunchAgents by `make tray-install`; @HOME@ is filled in there. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.trellomcp.tray</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@HOME@/Applications/Trello MCP.app/Contents/MacOS/trello-mcp-tray</string>
+	</array>
+	<!-- Login Items names this agent after the app, with its icon. -->
+	<key>AssociatedBundleIdentifiers</key>
+	<string>com.trellomcp.tray</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- Relaunch only on a crash: Quit exits 0 and stays down until next login. -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>@HOME@/Library/Logs/trello-mcp-tray.log</string>
+	<key>StandardErrorPath</key>
+	<string>@HOME@/Library/Logs/trello-mcp-tray.log</string>
+</dict>
+</plist>

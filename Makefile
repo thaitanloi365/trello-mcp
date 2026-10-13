@@ -5,6 +5,8 @@ APP         := Trello MCP.app
 AGENT       := com.trellomcp.tray
 AGENT_PLIST := $(HOME)/Library/LaunchAgents/$(AGENT).plist
 APP_DIR     := $(HOME)/Applications
+# Unload the login agent and wait until it has exited.
+stop-agent = launchctl bootout gui/$$(id -u)/$(AGENT) 2>/dev/null; while launchctl print gui/$$(id -u)/$(AGENT) >/dev/null 2>&1; do sleep 0.2; done
 SELFTEST    := $(or $(TMPDIR),/tmp)/$(TRAY)-selftest
 # Login Items shows the app's name and icon only for a team-signed agent (an
 # ad-hoc one shows as "exec"): sign with TEAM's Apple Development identity, as
@@ -34,8 +36,8 @@ lint:
 fmt:
 	cargo fmt
 
-# Everything CI-worthy: formatting, clippy, tests.
-check: lint test
+# Everything CI-worthy: formatting, clippy, tests; the tray selftest on macOS.
+check: lint test $(if $(filter Darwin,$(shell uname)),tray-test)
 
 # Usage: make release VERSION=2.0.0
 release:
@@ -58,6 +60,20 @@ tray: ## build dist/Trello MCP.app (macOS)
 	cp tray/Info.plist "dist/$(APP)/Contents/Info.plist"
 	cp tray/AppIcon.icns "dist/$(APP)/Contents/Resources/"
 	codesign --force -s "$(SIGN_ID)" "dist/$(APP)"
+
+tray-install: tray ## run the menu bar app now and at every login (macOS)
+	sed -e 's|@HOME@|$(HOME)|g' tray/$(AGENT).plist > $(AGENT).plist.tmp
+	plutil -lint $(AGENT).plist.tmp
+	@$(stop-agent)
+	mkdir -p "$(APP_DIR)" $(dir $(AGENT_PLIST))
+	rm -rf "$(APP_DIR)/$(APP)" && cp -R "dist/$(APP)" "$(APP_DIR)/"
+	/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$(APP_DIR)/$(APP)"
+	mv $(AGENT).plist.tmp $(AGENT_PLIST)
+	launchctl bootstrap gui/$$(id -u) $(AGENT_PLIST)
+
+tray-uninstall: ## stop the menu bar app and remove its login item and app
+	@$(stop-agent)
+	rm -rf $(AGENT_PLIST) "$(APP_DIR)/$(APP)"
 
 icon: ## render tray/AppIcon.icns from tray/AppIcon.svg (needs rsvg-convert)
 	rm -rf dist/AppIcon.iconset && mkdir -p dist/AppIcon.iconset

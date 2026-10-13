@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+- Trello MCP menu bar app (macOS): lists running servers with CPU, memory, project folder and
+  status, and stops one. `make tray-install`.
+- `serve` runs on a current-thread runtime: an idle server uses less memory and fewer threads.
+
 ## [2.0.0] - 2026-10-12
 
 Rewritten in Rust. Tools, the `draft_reply` prompt, and the config file are
