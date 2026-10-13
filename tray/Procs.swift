@@ -18,7 +18,7 @@ struct ServerID: Hashable {
 struct Proc: Equatable {
     let id: ServerID
     let ppid: pid_t
-    let parent: String      // the parent's process name, "" when unknown
+    let parent: String      // the parent's name (basename of its argv[0]), "" when unknown
     let folder: String?     // working folder: the project the client started it in
     let binary: String
     let config: String?     // the --config value
@@ -264,7 +264,7 @@ func usage(of pid: pid_t) -> (cpu: UInt64, mem: UInt64)? {
 }
 
 /// Finds and measures the running servers. What never changes for a process (its arguments,
-/// binary and folder) is read once, so a tick reads only names, parents and usage.
+/// binary, folder and parent name) is read once, so a tick reads only names and usage.
 final class Scanner {
     private struct Fixed { let binary: String; let folder: String?; let config: String?; let parent: String }
     private var fixed: [ServerID: Fixed] = [:]

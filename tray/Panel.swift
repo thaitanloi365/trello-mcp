@@ -335,7 +335,8 @@ final class PanelController: NSViewController {
         rowRefs = [:]
         figRefs = []
         noteRef = nil
-        let keptY = scrollRef?.contentView.bounds.origin.y ?? 0     // a re-render keeps the scroll position
+        totalsRef = nil
+        let keptY = view.window?.isVisible == true ? scrollRef?.contentView.bounds.origin.y ?? 0 : 0     // a re-render keeps the scroll position
         // Header and footer stay put; the middle scrolls once it outgrows the screen.
         let mid = vstack(middle(), 16)
         mid.widthAnchor.constraint(equalToConstant: 328).isActive = true
@@ -345,8 +346,6 @@ final class PanelController: NSViewController {
         scroll.hasVerticalScroller = h > m.cap
         scroll.verticalScrollElasticity = h > m.cap ? .automatic : .none
         scroll.documentView = mid
-        scroll.contentView.scroll(to: NSPoint(x: 0, y: min(keptY, max(0, h - m.cap))))
-        scroll.reflectScrolledClipView(scroll.contentView)
         scrollRef = scroll
         NSLayoutConstraint.activate([
             mid.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
@@ -363,6 +362,9 @@ final class PanelController: NSViewController {
             col.leadingAnchor.constraint(equalTo: view.leadingAnchor),
         ])
         view.layer?.backgroundColor = p.paper.cgColor
+        view.layoutSubtreeIfNeeded()    // the clip view has no height before layout, and would clamp the offset to 0
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: min(keptY, max(0, h - m.cap))))
+        scroll.reflectScrolledClipView(scroll.contentView)
         let size = col.fittingSize
         if let w = view.window {    // keep the top edge, under the status item
             w.setFrame(NSRect(x: w.frame.minX, y: w.frame.maxY - size.height, width: size.width, height: size.height), display: true)

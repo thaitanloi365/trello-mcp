@@ -185,6 +185,24 @@ precondition(panelSize().width == 360, "long label, 143% and 1.2 GB keep the wid
 pm.rows = (1...40).map { i in Row(proc: proc(pid_t(1000 + i), "/Users/me/P/project\(i)", start: t0 + UInt64(i)), label: "project\(i)", cpu: 0, status: .idle) }
 pm.cap = 400
 precondition(panelSize().height < 400 + 220, "40 rows scroll inside the cap: \(panelSize())")
+// A re-render keeps the scroll offset while the panel shows (hosted in a real window, off screen, so layout runs).
+let host = NSWindow(contentRect: NSRect(x: -10000, y: 0, width: 360, height: 800), styleMask: [.borderless], backing: .buffered, defer: false)
+host.contentViewController = pc
+host.orderFront(nil)
+func clip() -> NSClipView { ((pc.view.subviews.first as! NSStackView).arrangedSubviews[1] as! NSScrollView).contentView }
+pc.render()
+clip().scroll(to: NSPoint(x: 0, y: 500))
+clip().superview.map { ($0 as! NSScrollView).reflectScrolledClipView(clip()) }
+pc.render()
+precondition(clip().bounds.origin.y == 500, "scroll offset kept: \(clip().bounds.origin.y)")
+pm.rows = Array(pm.rows.prefix(12))
+pc.render()
+let docH = clip().documentView!.frame.height
+precondition(docH - 400 < 500 && clip().bounds.origin.y == docH - 400, "offset clamped to the shorter list: \(clip().bounds.origin.y), doc \(docH)")
+host.orderOut(nil)
+pc.render()
+precondition(clip().bounds.origin.y == 0, "a hidden panel reopens at the top")
+host.contentViewController = nil
 pm.rows = []
 pm.error = nil
 precondition(panelSize().width == 360, "empty state")
