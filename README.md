@@ -218,16 +218,21 @@ available for secret-manager and container workflows.
 
 ## Menu bar app (macOS)
 
-Trello MCP is a menu bar app that lists every running trello-mcp server: the project folder its
-client started it in, CPU and memory (as Activity Monitor counts them), status and uptime. Click a
-row for its binary, config and parent client, and to stop it. ORPHANED marks a server whose client
-has exited.
+Trello MCP is a menu bar app that lists every running trello-mcp server, grouped by the project
+folder of the Claude Code or Codex session that started it. Each row shows the PID, the build
+(`installed`, a worktree's name, or the binary's folders), the session's uptime, when the server
+last did work, CPU and memory (as Activity Monitor counts them). Quit stops a server: the first
+click arms a red Confirm for 3 s, the second sends SIGTERM, and SIGKILL follows after 5 s if the
+server lives on. The panel is the same layout as gws-mcp's tray.
 
 It reads processes only while its panel is open (libproc, every 2 s; no `ps`) and sits idle
 otherwise.
 
     make tray-install     # build dist/Trello MCP.app, install it to ~/Applications, start it now and at login
     make tray-uninstall   # stop it and remove the login item and the app
+
+`make tray-install` passes this checkout's `bin/trello-mcp` to the tray as `--cli`, so servers
+running that binary show as `installed`.
 
 Log: `~/Library/Logs/trello-mcp-tray.log`. `make tray-test` runs its selftest.
 

@@ -4,8 +4,9 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
-- Trello MCP menu bar app (macOS): lists running servers with CPU, memory, project folder and
-  status, and stops one. `make tray-install`.
+- Trello MCP menu bar app (macOS): lists running servers grouped by session folder with PID, build,
+  uptime, last activity, CPU and memory, and quits one (Quit, then Confirm). Same layout as the
+  gws-mcp tray. `make tray-install`.
 - `serve` runs on a current-thread runtime: an idle server uses less memory and fewer threads.
 
 ## [2.0.0] - 2026-10-12
