@@ -180,7 +180,10 @@ also take focus from the non-activating panel.
 - **Measured (installed tray, 2026-10-13):**
   - closed: 17 MB `phys_footprint`, CPU 0.0% (`ps`, and `top` over 4 samples 2 s apart); claude-usage's
     tray measured 32 MB and 0.0% on the same Mac;
-  - open: pending the visual pass.
+  - open with 11 servers and one row expanded: 0.14% CPU over 20 s (1.85-2.42 ms per sample and tick), 26-27 MB,
+    measured with a driver that runs the tray's own sample and tick code. The closed figure of 17 MB holds
+    only before the first open; after the first open, the closed footprint stays at about 26 MB, still under
+    claude-usage's 32 MB. Re-measured after reinstalling, panel never opened: 26 MB `phys_footprint`, CPU 0.0% (`ps`).
 
 ## Lighter server
 
@@ -191,10 +194,11 @@ worker per core. The proposed change is
 - MCP over stdio has a single client, and nothing in `src/` calls `block_in_place`, which panics
   on a current-thread runtime.
 - The blocking pool remains for the stdin read.
-- The baseline, measured today on an idle `bin/trello-mcp serve` on a 16-core Mac:
-  - footprint 8.0 MB;
-  - RSS 3.9 MB;
-  - 9 threads.
+- Measured on the Rust build (commit c17a6c9), idle `serve`:
+  - footprint 3330 -> 2936 KB;
+  - threads 20 -> 4;
+  - binary 8578816 -> 8330672 bytes.
+  The change was kept.
 
 Measure footprint and threads the same way after the change. Keep it only if the footprint drops.
 Otherwise revert and record the numbers. `cargo test` and `make lint` must still pass, and a live
@@ -217,6 +221,7 @@ New Makefile targets (`install` stays as it is):
 
 LaunchAgent settings:
 - RunAtLoad.
+- `ProcessType` `Interactive`, so launchd does not throttle status item clicks.
 - KeepAlive only on a crash (`SuccessfulExit` false).
 - `AssociatedBundleIdentifiers` `com.trellomcp.tray`.
 - stdout and stderr go to `~/Library/Logs/trello-mcp-tray.log`, which Open Log opens.

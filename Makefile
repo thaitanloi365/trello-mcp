@@ -65,15 +65,15 @@ tray-install: tray ## run the menu bar app now and at every login (macOS)
 	sed -e 's|@HOME@|$(HOME)|g' tray/$(AGENT).plist > $(AGENT).plist.tmp
 	plutil -lint $(AGENT).plist.tmp
 	@$(stop-agent)
-	mkdir -p "$(APP_DIR)" $(dir $(AGENT_PLIST))
+	mkdir -p "$(APP_DIR)" "$(HOME)/Library/LaunchAgents"
 	rm -rf "$(APP_DIR)/$(APP)" && cp -R "dist/$(APP)" "$(APP_DIR)/"
 	/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$(APP_DIR)/$(APP)"
-	mv $(AGENT).plist.tmp $(AGENT_PLIST)
-	launchctl bootstrap gui/$$(id -u) $(AGENT_PLIST)
+	mv $(AGENT).plist.tmp "$(AGENT_PLIST)"
+	launchctl bootstrap gui/$$(id -u) "$(AGENT_PLIST)"
 
 tray-uninstall: ## stop the menu bar app and remove its login item and app
 	@$(stop-agent)
-	rm -rf $(AGENT_PLIST) "$(APP_DIR)/$(APP)"
+	rm -rf "$(AGENT_PLIST)" "$(APP_DIR)/$(APP)"
 
 icon: ## render tray/AppIcon.icns from tray/AppIcon.svg (needs rsvg-convert)
 	rm -rf dist/AppIcon.iconset && mkdir -p dist/AppIcon.iconset

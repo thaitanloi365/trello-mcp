@@ -177,20 +177,21 @@ pm.stats = trayStats(cpu: 0.1, mem: 21 << 20)
 pm.rows = rs
 pm.open = rs[1].id
 pm.error = stopFailure(20, EPERM)
-precondition(panelSize().width == 360, "panel with rows, an open row and an error: \(panelSize())")
+precondition(panelSize().width == 380, "panel with rows, an open row and an error: \(panelSize())")
 let wide = Proc(id: ServerID(pid: 99999, start: t0), ppid: 500, parent: "claude", folder: "/Users/me/" + String(repeating: "very_long_project_name_", count: 3),
                 binary: "/Users/me/bin/trello-mcp", config: nil, cpuNs: 0, mem: 1229 << 20)
 pm.rows = rows([wide], cpu: [wide.id: 143.2], stopping: [], home: h)
-precondition(panelSize().width == 360, "long label, 143% and 1.2 GB keep the width: \(panelSize())")
+precondition(panelSize().width == 380, "long label, 143% and 1.2 GB keep the width: \(panelSize())")
 pm.rows = (1...40).map { i in Row(proc: proc(pid_t(1000 + i), "/Users/me/P/project\(i)", start: t0 + UInt64(i)), label: "project\(i)", cpu: 0, status: .idle) }
 pm.cap = 400
 precondition(panelSize().height < 400 + 220, "40 rows scroll inside the cap: \(panelSize())")
 // A re-render keeps the scroll offset while the panel shows (hosted in a real window, off screen, so layout runs).
-let host = NSWindow(contentRect: NSRect(x: -10000, y: 0, width: 360, height: 800), styleMask: [.borderless], backing: .buffered, defer: false)
+let host = NSWindow(contentRect: NSRect(x: -10000, y: 0, width: 380, height: 800), styleMask: [.borderless], backing: .buffered, defer: false)
 host.contentViewController = pc
 host.orderFront(nil)
 func clip() -> NSClipView { ((pc.view.subviews.first as! NSStackView).arrangedSubviews[1] as! NSScrollView).contentView }
 pc.render()
+precondition(clip().documentView!.frame.width <= clip().bounds.width, "rows never scroll sideways: doc \(clip().documentView!.frame.width), clip \(clip().bounds.width)")
 clip().scroll(to: NSPoint(x: 0, y: 500))
 clip().superview.map { ($0 as! NSScrollView).reflectScrolledClipView(clip()) }
 pc.render()
@@ -205,10 +206,10 @@ precondition(clip().bounds.origin.y == 0, "a hidden panel reopens at the top")
 host.contentViewController = nil
 pm.rows = []
 pm.error = nil
-precondition(panelSize().width == 360, "empty state")
+precondition(panelSize().width == 380, "empty state")
 pc.view.appearance = NSAppearance(named: .darkAqua)
 pm.rows = rs
-precondition(panelSize().width == 360, "dark")
+precondition(panelSize().width == 380, "dark")
 
 print("tray selftest ok")
 exit(0)
@@ -260,7 +261,7 @@ final class Tray: NSObject, NSApplicationDelegate {
     func openPanel() {
         guard let b = item.button, let bar = b.window else { return }
         let r = bar.convertToScreen(b.convert(b.bounds, to: nil)), vis = (bar.screen ?? NSScreen.main)?.visibleFrame ?? .zero
-        model.cap = vis.height - 160    // room for header and footer
+        model.cap = bar.frame.minY - vis.minY - 160    // room for header and footer; the bar's bottom edge, since an auto-hidden menu bar is inside visibleFrame
         last = [:]                      // CPU since the panel last closed would be a stale average
         mine = nil
         sample()
@@ -268,9 +269,9 @@ final class Tray: NSObject, NSApplicationDelegate {
         let s = window.frame.size
         window.setFrameOrigin(NSPoint(x: min(max(r.midX - s.width / 2, vis.minX), vis.maxX - s.width), y: bar.frame.minY - s.height))
         window.makeKeyAndOrderFront(nil)
-        // The status item's own clicks reach us as global events; its action does the toggling.
+        // The status item's own clicks reach us as global events; its action does the toggling, so clicks anywhere in the status bar window are left alone.
         clicks = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [unowned self] e in
-            if !r.contains(e.locationInWindow) { closePanel() }
+            if !bar.frame.contains(e.locationInWindow) { closePanel() }
         }
         sampleAgain(after: 0.5)         // CPU needs a second sample: show it almost at once
     }

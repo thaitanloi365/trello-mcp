@@ -338,13 +338,17 @@ final class PanelController: NSViewController {
         totalsRef = nil
         let keptY = view.window?.isVisible == true ? scrollRef?.contentView.bounds.origin.y ?? 0 : 0     // a re-render keeps the scroll position
         // Header and footer stay put; the middle scrolls once it outgrows the screen.
-        let mid = vstack(middle(), 16)
-        mid.widthAnchor.constraint(equalToConstant: 328).isActive = true
+        // The scroll view runs into the right margin, so its thin overlay scroller sits there and never covers or narrows the rows.
+        let mid = vstack(middle(), 16, inset: edges(0, 0, 0, 16))
+        mid.widthAnchor.constraint(equalToConstant: 364).isActive = true
         let h = mid.fittingSize.height
         let scroll = NSScrollView()
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = h > m.cap
+        scroll.scrollerStyle = .overlay     // a legacy scroller would take width from the clip view and make the rows scroll sideways
+        scroll.verticalScroller?.controlSize = .small
         scroll.verticalScrollElasticity = h > m.cap ? .automatic : .none
+        scroll.horizontalScrollElasticity = .none
         scroll.documentView = mid
         scrollRef = scroll
         NSLayoutConstraint.activate([
@@ -352,12 +356,12 @@ final class PanelController: NSViewController {
             mid.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             scroll.heightAnchor.constraint(equalToConstant: min(h, m.cap)),
         ])
-        let col = vstack([header(), scroll, footer()], 16, inset: edges(16, 16, 16, 16))
+        let col = vstack([pad(header(), edges(0, 0, 0, 16)), scroll, pad(footer(), edges(0, 0, 0, 16))], 16, inset: edges(16, 16, 16, 0))
         col.translatesAutoresizingMaskIntoConstraints = false
         view.subviews.forEach { $0.removeFromSuperview() }
         view.addSubview(col)
         NSLayoutConstraint.activate([
-            col.widthAnchor.constraint(equalToConstant: 360),
+            col.widthAnchor.constraint(equalToConstant: 380),
             col.topAnchor.constraint(equalTo: view.topAnchor),
             col.leadingAnchor.constraint(equalTo: view.leadingAnchor),
         ])
@@ -397,7 +401,7 @@ final class PanelController: NSViewController {
     func middle() -> [NSView] {
         var out: [NSView] = []
         if let e = m.error {
-            let box = pad(label(e, 13, .b, p.redInk, wrap: 308), edges(10, 10, 10, 10))
+            let box = pad(label(e, 13, .b, p.redInk, wrap: 328), edges(10, 10, 10, 10))
             box.wantsLayer = true
             box.layer?.borderWidth = 2
             box.layer?.borderColor = p.redInk.cgColor
@@ -501,7 +505,7 @@ final class PanelController: NSViewController {
             m.onStop(r)
         }
         stop.setAccessibilityLabel("Stop server \(r.label), PID \(r.id.pid)")
-        let note = label("Its session loses Trello tools until it reconnects (/mcp in Claude Code).", 12, p.muted, wrap: 312)
+        let note = label("Its session loses Trello tools until it reconnects (/mcp in Claude Code).", 12, p.muted, wrap: 332)
         let col = vstack(lines + [hstack([stop, spacer()]), note], 4, inset: edges(0, 16, 12, 0))
         if let last = lines.last { col.setCustomSpacing(12, after: last) }
         return col
