@@ -1,5 +1,5 @@
 // Finding and measuring the running trello-mcp servers with libproc, stopping one, and the pure
-// rules and text the panel shows them by. No AppKit here; main.swift's SELFTEST block checks it all.
+// rules and text the panel shows them by (grouping, activity, labels), as in gws-mcp's tray. No AppKit here; main.swift's SELFTEST block checks it all.
 import Foundation
 
 /// The server binary's process name. The tray itself is trello-mcp-tray, so it never matches.
@@ -14,16 +14,25 @@ struct ServerID: Hashable {
     var started: Date { Date(timeIntervalSince1970: Double(start) / 1e6) }
 }
 
-/// One measured server.
-struct Proc: Equatable {
+/// One server as a scan sees it.
+struct ServerSample: Equatable {
     let id: ServerID
     let ppid: pid_t
-    let parent: String      // the parent's name (basename of its argv[0]), "" when unknown
-    let folder: String?     // working folder: the project the client started it in
-    let binary: String
-    let config: String?     // the --config value
-    let cpuNs: UInt64       // CPU time so far
-    let mem: UInt64         // physical footprint in bytes: Activity Monitor's Memory
+    let parent: String          // the parent's name (basename of its argv[0]), "" when unknown
+    let parentStarted: UInt64?  // the session's start time (µs); nil: no session (parent is launchd or gone)
+    let folder: String?         // the session's working folder
+    let path: String            // the binary
+    let cpuNs: UInt64           // CPU time so far
+    let mem: UInt64             // physical footprint in bytes: Activity Monitor's Memory
+}
+
+/// What the tray knows about one server across scans.
+struct ServerRow: Equatable {
+    var s: ServerSample
+    var cpu: Double?        // percent of one core since the previous scan; nil on the first
+    var lastActive: Date?   // the last scan that saw it work; nil: not seen since the tray started
+
+    var id: ServerID { s.id }
 }
 
 // MARK: - Arguments
@@ -39,14 +48,6 @@ func plainArgs(_ argv: [String]) -> [String] {
 
 /// trello-mcp serves when its first argument, --config aside, is `serve` or there is none.
 func isServer(_ argv: [String]) -> Bool { plainArgs(argv).first.map { $0 == "serve" } ?? true }
-
-func configArg(_ argv: [String]) -> String? {
-    for (i, a) in argv.enumerated().dropFirst() {
-        if a == "--config" { return i + 1 < argv.count ? argv[i + 1] : nil }
-        if a.hasPrefix("--config=") { return String(a.dropFirst("--config=".count)) }
-    }
-    return nil
-}
 
 /// argv from a KERN_PROCARGS2 buffer: argc (Int32), the exec path, NUL padding, then argc NUL-ended strings.
 func parseProcArgs(_ b: [UInt8]) -> [String]? {
@@ -66,70 +67,105 @@ func parseProcArgs(_ b: [UInt8]) -> [String]? {
     return out.count == argc ? out : nil
 }
 
-// MARK: - Labels and status
+// MARK: - Servers
 
-/// Each working folder's last component, after its parent when the name is shorter than 4
-/// characters or another folder has the same name. Home is ~; an unknown folder is trello-mcp.
-func projectLabels(_ folders: [String?], home: String) -> [String] {
-    let name = { (f: String) in (f as NSString).lastPathComponent }
-    var uses: [String: Int] = [:]
-    for f in Set(folders.compactMap { $0 }) { uses[name(f), default: 0] += 1 }
-    return folders.map { f in
-        guard let f else { return serverName }
-        if f == "/" { return "/" }
-        if f == home { return "~" }
-        let n = name(f)
-        guard n.count < 4 || uses[n, default: 0] > 1 else { return n }
-        let parent = (f as NSString).deletingLastPathComponent
-        return parent == home ? "~/" + n : name(parent) + "/" + n
+/// CPU time a server must burn between two scans to count as working: one tool call
+/// costs a few ms; an idle server adds well under 1 ms per 2 s.
+let activeCPU: UInt64 = 2_000_000
+
+/// Folds a scan into the rows: history carries over by ServerID, gone servers drop out. Without an
+/// earlier scan (the first, or the panel just reopened) there is no CPU figure, but the last
+/// activity is kept.
+func advance(_ old: [ServerRow], _ scan: [ServerSample], prevAt: Date?, at: Date) -> [ServerRow] {
+    let byID = Dictionary(old.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+    return scan.map { s in
+        guard let o = byID[s.id] else { return ServerRow(s: s, cpu: nil, lastActive: nil) }
+        guard let prevAt, at > prevAt else { return ServerRow(s: s, cpu: nil, lastActive: o.lastActive) }
+        let d = s.cpuNs > o.s.cpuNs ? s.cpuNs - o.s.cpuNs : 0
+        return ServerRow(s: s, cpu: Double(d) / 1e9 / at.timeIntervalSince(prevAt) * 100, lastActive: d >= activeCPU ? at : o.lastActive)
     }
 }
 
-func tilde(_ path: String, home: String) -> String {
-    path == home ? "~" : path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
+/// Whether two scans hold the same servers in the same groups; then a tick only updates numbers.
+func sameShape(_ a: [ServerRow], _ b: [ServerRow]) -> Bool {
+    let key = { (r: ServerRow) in "\(r.id.pid) \(r.id.start) \(r.s.folder ?? "")" }
+    return Set(a.map(key)) == Set(b.map(key))
 }
 
-enum Status: Equatable { case stopping, orphaned, busy, idle }
-
-/// Orphaned: the client that started it is gone and launchd adopted it.
-func status(ppid: pid_t, cpu: Double?, stopping: Bool) -> Status {
-    stopping ? .stopping : ppid == 1 ? .orphaned : (cpu ?? 0) > 0.05 ? .busy : .idle
+/// "now" under a minute, then "12m ago", "3h ago", "2d ago"; "—" before any activity was seen.
+func activeText(_ last: Date?, now: Date) -> String {
+    guard let last else { return "—" }
+    let m = max(0, Int(now.timeIntervalSince(last) / 60))
+    return m < 1 ? "now" : m < 60 ? "\(m)m ago" : m < 1440 ? "\(m / 60)h ago" : "\(m / 1440)d ago"
 }
 
-enum Tone: Equatable { case ink, amber, red }
+/// The Build cell: "installed" for the tray's CLI, the worktree's name under
+/// .claude/worktrees, else the last two folders of the binary's path.
+func buildLabel(_ path: String, cli: String) -> String {
+    if path == cli { return "installed" }
+    if let r = path.range(of: "/.claude/worktrees/") { return String(path[r.upperBound...].prefix { $0 != "/" }) }
+    let dirs = path.split(separator: "/").dropLast()
+    return dirs.isEmpty ? path : dirs.suffix(2).joined(separator: "/")
+}
 
-/// The Threshold Rule: ink below 80%, amber from 80%, red from 95%.
-func tone(_ p: Double?) -> Tone { (p ?? 0) >= 95 ? .red : (p ?? 0) >= 80 ? .amber : .ink }
+let noSession = "No session"
 
-/// A server as the panel shows it.
-struct Row: Equatable {
-    let proc: Proc
+/// A group's label: the last two folders of its session's working folder, "~" for home.
+func groupLabel(_ folder: String?, home: String) -> String {
+    guard let folder, !folder.isEmpty else { return noSession }
+    if folder == home { return "~" }
+    let parts = folder.split(separator: "/")
+    return parts.isEmpty ? folder : parts.suffix(2).joined(separator: "/")
+}
+
+struct ServerGroup: Equatable {
     let label: String
-    let cpu: Double?    // percent of one core over the last interval; nil before a second sample
-    let status: Status
-    var id: ServerID { proc.id }
-    var mem: UInt64 { proc.mem }
+    let rows: [ServerRow]
 }
 
-/// Rows by project label, then start time: the order never moves as numbers tick.
-func rows(_ procs: [Proc], cpu: [ServerID: Double], stopping: Set<ServerID>, home: String) -> [Row] {
-    zip(procs, projectLabels(procs.map(\.folder), home: home)).map { p, label in
-        Row(proc: p, label: label, cpu: cpu[p.id], status: status(ppid: p.ppid, cpu: cpu[p.id], stopping: stopping.contains(p.id)))
-    }.sorted { ($0.label, $0.id.start, $0.id.pid) < ($1.label, $1.id.start, $1.id.pid) }
+/// Groups by session folder, alphabetically with "No session" last; rows oldest session first.
+func groups(_ rows: [ServerRow], home: String) -> [ServerGroup] {
+    Dictionary(grouping: rows) { groupLabel($0.s.folder, home: home) }
+        .map { ServerGroup(label: $0.key, rows: $0.value.sorted {
+            ($0.s.parentStarted ?? $0.id.start, $0.id.pid) < ($1.s.parentStarted ?? $1.id.start, $1.id.pid)
+        }) }
+        .sorted { ($0.label == noSession ? 1 : 0, $0.label.lowercased()) < ($1.label == noSession ? 1 : 0, $1.label.lowercased()) }
 }
 
-/// Same servers, labels and stopping state: a tick updates numbers in place instead of re-rendering.
-func sameShape(_ a: [Row], _ b: [Row]) -> Bool {
-    a.map(\.id) == b.map(\.id) && a.map(\.label) == b.map(\.label) && a.map { $0.status == .stopping } == b.map { $0.status == .stopping }
+/// Distinct sessions among the rows.
+func sessionCount(_ rows: [ServerRow]) -> Int {
+    Set(rows.compactMap { r in r.s.parentStarted.map { "\(r.s.ppid) \($0)" } }).count
+}
+
+/// "4 sessions · 38 MB", or only the memory for servers with no session.
+func groupMeta(_ g: ServerGroup) -> String {
+    let n = sessionCount(g.rows), mem = memText(g.rows.reduce(0) { $0 + $1.s.mem })
+    return n == 0 ? mem : "\(n) session\(n == 1 ? "" : "s") · \(mem)"
+}
+
+/// Total CPU of the rows; nil while every row still waits for its second scan.
+func totalCPU(_ rows: [ServerRow]) -> Double? {
+    let known = rows.compactMap(\.cpu)
+    return known.isEmpty ? nil : known.reduce(0, +)
+}
+
+/// "6d 21h", "5h 12m" or "12m", rounded down to the minute.
+func countdown(_ t: TimeInterval) -> String {
+    let m = max(0, Int(t / 60))
+    return m >= 1440 ? "\(m / 1440)d \(m % 1440 / 60)h" : m >= 60 ? "\(m / 60)h \(m % 60)m" : "\(m)m"
+}
+
+/// The Up cell: how long the owning session has run ("2d 9h", "45m"); "—" without one.
+func upText(_ r: ServerRow, now: Date) -> String {
+    r.s.parentStarted.map { countdown(now.timeIntervalSince1970 - Double($0) / 1e6) } ?? "—"
+}
+
+/// The section's figures: servers, sessions, memory, CPU.
+func serverFigures(_ rows: [ServerRow]) -> [String] {
+    ["\(rows.count)", "\(sessionCount(rows))", memText(rows.reduce(0) { $0 + $1.s.mem }), cpuText(totalCPU(rows))]
 }
 
 // MARK: - Text
-
-/// Percent of one core between two (CPU ns, uptime s) samples; nil without an earlier one.
-func cpuPercent(_ a: (cpu: UInt64, at: TimeInterval)?, _ b: (cpu: UInt64, at: TimeInterval)) -> Double? {
-    guard let a, b.at > a.at else { return nil }
-    return max(0, Double(b.cpu) - Double(a.cpu)) / 1e9 / (b.at - a.at) * 100
-}
 
 /// "0.6%", "143%" from 100, "—" before a second sample.
 func cpuText(_ p: Double?) -> String { p.map { String(format: $0 >= 100 ? "%.0f%%" : "%.1f%%", $0) } ?? "—" }
@@ -140,60 +176,17 @@ func memText(_ b: UInt64) -> String {
     return mb >= 1024 ? String(format: "%.1f GB", mb / 1024) : String(format: mb < 10 ? "%.1f MB" : "%.0f MB", mb)
 }
 
-/// "4 MIN", "2H 14M", "1 DAY", "3 DAYS", rounded down.
-func uptime(_ t: TimeInterval) -> String {
-    let m = max(0, Int(t / 60)), d = m / 1440
-    if d > 0 { return "\(d) DAY\(d == 1 ? "" : "S")" }
-    return m >= 60 ? String(format: "%dH %02dM", m / 60, m % 60) : "\(m) MIN"
+/// The footer's line about the tray itself, from two (CPU ns, time) samples of its own usage.
+func trayStats(_ prev: (cpu: UInt64, at: Date)?, cpu: UInt64, mem: UInt64, at: Date) -> String {
+    let pct = prev.flatMap { p in at > p.at ? Double(cpu > p.cpu ? cpu - p.cpu : 0) / 1e9 / at.timeIntervalSince(p.at) * 100 : nil }
+    return "Tray: CPU \(cpuText(pct)) · Memory \(memText(mem))"
 }
 
-/// "IDLE · PID 3959 · UP 3 DAYS"
-func statusLine(_ r: Row, now: Date) -> String {
-    let word = switch r.status {
-    case .stopping: "STOPPING…"
-    case .orphaned: "ORPHANED"
-    case .busy: "BUSY"
-    case .idle: "IDLE"
-    }
-    return "\(word) · PID \(r.id.pid) · UP \(uptime(now.timeIntervalSince(r.id.started)))"
+/// --cli <path> from the LaunchAgent; "" without it, so no build shows "installed".
+func cliPath(_ args: [String]) -> String {
+    if let i = args.firstIndex(of: "--cli"), i + 1 < args.count { return args[i + 1] }
+    return ""
 }
-
-/// VoiceOver text of a row.
-func rowSummary(_ r: Row, now: Date) -> String {
-    "\(r.label), CPU \(cpuText(r.cpu)), memory \(memText(r.mem)), \(statusLine(r, now: now).lowercased())"
-}
-
-/// Summed CPU (nil until a server has a second sample) and memory, and the note under them.
-func totals(_ rows: [Row], now: Date) -> (cpu: Double?, mem: UInt64, note: String) {
-    let cpus = rows.compactMap(\.cpu)
-    var parts: [String] = []
-    for (s, word) in [(Status.idle, "idle"), (.busy, "busy"), (.orphaned, "orphaned"), (.stopping, "stopping")] {
-        let n = rows.filter { $0.status == s }.count
-        if n > 0 { parts.append("\(n) \(word)") }
-    }
-    if let first = rows.map(\.id.started).min() { parts.append("oldest up " + uptime(now.timeIntervalSince(first)).lowercased()) }
-    return (cpus.isEmpty ? nil : cpus.reduce(0, +), rows.reduce(0) { $0 + $1.mem }, parts.joined(separator: " · "))
-}
-
-/// "Today 9:12 AM", "Mon 9:12 AM" within a week, else "Oct 6 9:12 AM".
-func startedText(_ d: Date, now: Date) -> String {
-    let f = DateFormatter()
-    f.dateFormat = "h:mm a"
-    if Calendar.current.isDate(d, inSameDayAs: now) { return "Today " + f.string(from: d) }
-    f.dateFormat = now.timeIntervalSince(d) < 6 * 86400 ? "EEE h:mm a" : "MMM d h:mm a"
-    return f.string(from: d)
-}
-
-/// Label and value lines of an expanded row.
-func detailLines(_ p: Proc, home: String, now: Date) -> [(String, String)] {
-    [("Folder", p.folder.map { tilde($0, home: home) } ?? "unknown"),
-     ("Binary", tilde(p.binary, home: home)),
-     ("Config", p.config.map { tilde($0, home: home) } ?? "default"),
-     ("Started by", p.ppid == 1 ? "launchd · orphaned" : "\(p.parent.isEmpty ? "unknown" : p.parent) · PID \(p.ppid)"),
-     ("Started", startedText(p.id.started, now: now))]
-}
-
-func trayStats(cpu: Double?, mem: UInt64) -> String { "Tray: CPU \(cpuText(cpu)) · Memory \(memText(mem))" }
 
 // MARK: - libproc
 
@@ -263,15 +256,16 @@ func usage(of pid: pid_t) -> (cpu: UInt64, mem: UInt64)? {
     return ((ri.ri_user_time + ri.ri_system_time) * UInt64(timebase.numer) / UInt64(timebase.denom), ri.ri_phys_footprint)
 }
 
-/// Finds and measures the running servers. What never changes for a process (its arguments,
-/// binary, folder and parent name) is read once, so a tick reads only names and usage.
+/// Finds and measures the running servers. What never changes for a process (its binary and its
+/// parent's name, start time and folder) is read once, so a tick reads only names and usage.
+/// Not thread-safe: the tray runs it on one serial queue, one scan at a time.
 final class Scanner {
-    private struct Fixed { let binary: String; let folder: String?; let config: String?; let parent: String }
+    private struct Fixed { let path: String; let parent: String; let ppid: pid_t; let parentStarted: UInt64?; let folder: String? }
     private var fixed: [ServerID: Fixed] = [:]
     private var others: Set<ServerID> = []      // trello-mcp processes that are not servers
 
-    func scan() -> [Proc] {
-        var out: [Proc] = [], nextFixed: [ServerID: Fixed] = [:], nextOthers: Set<ServerID> = []
+    func scan() -> [ServerSample] {
+        var out: [ServerSample] = [], nextFixed: [ServerID: Fixed] = [:], nextOthers: Set<ServerID> = []
         for pid in userPids() where procName(pid) == serverName {
             // A failing call means the process just exited: skip it.
             guard let b = bsdInfo(pid) else { continue }
@@ -281,14 +275,19 @@ final class Scanner {
             if f == nil {
                 guard let argv = args(of: pid) else { continue }
                 guard isServer(argv) else { nextOthers.insert(id); continue }
-                f = Fixed(binary: path(of: pid) ?? argv.first ?? serverName, folder: folder(of: pid), config: configArg(argv),
+                // The session is the parent; launchd (1) or a parent that is gone means none.
+                let session = b.ppid > 1 ? bsdInfo(b.ppid) : nil
+                f = Fixed(path: path(of: pid) ?? argv.first ?? serverName,
                           // argv[0], not proc_name: Claude Code's executable file is named after its version
-                          parent: args(of: b.ppid)?.first.map { ($0 as NSString).lastPathComponent } ?? procName(b.ppid) ?? "")
+                          parent: args(of: b.ppid)?.first.map { ($0 as NSString).lastPathComponent } ?? procName(b.ppid) ?? "",
+                          ppid: b.ppid, parentStarted: session?.start, folder: session == nil ? nil : folder(of: b.ppid))
             }
             guard let f, let u = usage(of: pid) else { continue }
             nextFixed[id] = f
-            out.append(Proc(id: id, ppid: b.ppid, parent: f.parent, folder: f.folder, binary: f.binary,
-                            config: f.config, cpuNs: u.cpu, mem: u.mem))
+            // A server whose parent exited is adopted by launchd: it has no session from then on.
+            let session = b.ppid == f.ppid
+            out.append(ServerSample(id: id, ppid: b.ppid, parent: f.parent, parentStarted: session ? f.parentStarted : nil,
+                                    folder: session ? f.folder : nil, path: f.path, cpuNs: u.cpu, mem: u.mem))
         }
         fixed = nextFixed
         others = nextOthers
@@ -306,10 +305,13 @@ func stopFailure(_ pid: pid_t, _ e: Int32) -> String? {
     e == ESRCH ? nil : "Could not stop PID \(pid): \(String(cString: strerror(e)))"
 }
 
+/// Seconds between SIGTERM and SIGKILL.
+let stopGrace: TimeInterval = 5
+
 /// Stops `id` if it still runs as `name`: SIGTERM, then SIGKILL after `grace` s if it lives on.
 /// done gets nil once it is stopped or gone, else why not: at once when nothing was sent, else on
 /// the main queue after the grace period.
-func stop(_ id: ServerID, name: String, grace: TimeInterval = 3, done: @escaping (String?) -> Void) {
+func stop(_ id: ServerID, name: String, grace: TimeInterval = stopGrace, done: @escaping (String?) -> Void) {
     guard alive(id, name: name) else { return done(nil) }   // gone, or its pid now belongs to another process
     if kill(id.pid, SIGTERM) != 0 { return done(stopFailure(id.pid, errno)) }
     DispatchQueue.main.asyncAfter(deadline: .now() + grace) {
