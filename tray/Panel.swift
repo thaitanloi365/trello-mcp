@@ -300,6 +300,8 @@ final class PanelController: NSViewController {
     private var figRefs: [NSTextField] = []     // servers, CPU, memory
     private var noteRef: NSTextField?
     private var statsRef: NSTextField?
+    private var totalsRef: NSView?
+    private var scrollRef: NSScrollView?
     private var p = pal(dark: false, inverted: false), inv = pal(dark: false, inverted: true)
 
     init(_ m: PanelModel) {
@@ -333,6 +335,7 @@ final class PanelController: NSViewController {
         rowRefs = [:]
         figRefs = []
         noteRef = nil
+        let keptY = scrollRef?.contentView.bounds.origin.y ?? 0     // a re-render keeps the scroll position
         // Header and footer stay put; the middle scrolls once it outgrows the screen.
         let mid = vstack(middle(), 16)
         mid.widthAnchor.constraint(equalToConstant: 328).isActive = true
@@ -342,6 +345,9 @@ final class PanelController: NSViewController {
         scroll.hasVerticalScroller = h > m.cap
         scroll.verticalScrollElasticity = h > m.cap ? .automatic : .none
         scroll.documentView = mid
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: min(keptY, max(0, h - m.cap))))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        scrollRef = scroll
         NSLayoutConstraint.activate([
             mid.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             mid.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
@@ -381,6 +387,7 @@ final class PanelController: NSViewController {
             setText(figRefs[1], cpuText(t.cpu), inv.ink)
             setText(figRefs[2], memText(t.mem), inv.ink)
         }
+        totalsRef?.setAccessibilityLabel(totalsLabel(t))
         if let n = noteRef { setText(n, t.note, inv.muted) }
         if let s = statsRef, !m.stats.isEmpty { setText(s, m.stats, p.muted) }
     }
@@ -398,7 +405,7 @@ final class PanelController: NSViewController {
     }
 
     func header() -> NSView {
-        let top = hstack([hstack([boardMark(20, p.ink), label("Trello MCP", 15, .b, em: -0.02, p.ink)], 8), spacer(),
+        let top = hstack([hstack([boardMark(22, p.ink), label("Trello MCP", 15, .b, em: -0.02, p.ink)], 8), spacer(),
                           label("live · every 2 s", 12, p.muted)], 12)
         return vstack([top, block(p.ink, h: 4)], 12)
     }
@@ -435,8 +442,13 @@ final class PanelController: NSViewController {
         s.layer?.backgroundColor = inv.paper.cgColor
         s.setAccessibilityElement(true)
         s.setAccessibilityRole(.group)
-        s.setAccessibilityLabel("\(m.rows.count) servers, CPU \(cpuText(t.cpu)), memory \(memText(t.mem)), \(t.note)")
+        s.setAccessibilityLabel(totalsLabel(t))
+        totalsRef = s
         return s
+    }
+
+    func totalsLabel(_ t: (cpu: Double?, mem: UInt64, note: String)) -> String {
+        "\(m.rows.count) servers, CPU \(cpuText(t.cpu)), memory \(memText(t.mem)), \(t.note)"
     }
 
     func table() -> NSView {

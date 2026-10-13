@@ -9,7 +9,7 @@ let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathCompon
 
 /// Menu bar icon: the board mark as a template image, so it follows the menu bar's light and dark.
 func boardImage() -> NSImage {
-    let h: CGFloat = 14, w = h / 4, gap = h / 8
+    let h: CGFloat = 16, w = h / 4, gap = h / 8
     let img = NSImage(size: NSSize(width: 3 * w + 2 * gap, height: h), flipped: false) { _ in
         NSColor.black.setFill()
         for (i, k) in boardColumns.enumerated() {
@@ -169,7 +169,7 @@ precondition(answered && stubborn.terminationReason == .uncaughtSignal && stubbo
 try? FileManager.default.removeItem(at: dir)
 
 // Menu bar icon and panel rendering (no window: sizes only).
-precondition(boardImage().isTemplate && boardImage().size == NSSize(width: 14, height: 14), "menu bar icon: \(boardImage().size)")
+precondition(boardImage().isTemplate && boardImage().size == NSSize(width: 16, height: 16), "menu bar icon: \(boardImage().size)")
 _ = NSApplication.shared
 let pm = PanelModel(), pc = PanelController(pm)
 func panelSize() -> NSSize { pc.render(); return pc.view.subviews.first?.fittingSize ?? .zero }

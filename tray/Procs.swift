@@ -266,7 +266,7 @@ func usage(of pid: pid_t) -> (cpu: UInt64, mem: UInt64)? {
 /// Finds and measures the running servers. What never changes for a process (its arguments,
 /// binary and folder) is read once, so a tick reads only names, parents and usage.
 final class Scanner {
-    private struct Fixed { let binary: String; let folder: String?; let config: String? }
+    private struct Fixed { let binary: String; let folder: String?; let config: String?; let parent: String }
     private var fixed: [ServerID: Fixed] = [:]
     private var others: Set<ServerID> = []      // trello-mcp processes that are not servers
 
@@ -281,11 +281,13 @@ final class Scanner {
             if f == nil {
                 guard let argv = args(of: pid) else { continue }
                 guard isServer(argv) else { nextOthers.insert(id); continue }
-                f = Fixed(binary: path(of: pid) ?? argv.first ?? serverName, folder: folder(of: pid), config: configArg(argv))
+                f = Fixed(binary: path(of: pid) ?? argv.first ?? serverName, folder: folder(of: pid), config: configArg(argv),
+                          // argv[0], not proc_name: Claude Code's executable file is named after its version
+                          parent: args(of: b.ppid)?.first.map { ($0 as NSString).lastPathComponent } ?? procName(b.ppid) ?? "")
             }
             guard let f, let u = usage(of: pid) else { continue }
             nextFixed[id] = f
-            out.append(Proc(id: id, ppid: b.ppid, parent: procName(b.ppid) ?? "", folder: f.folder, binary: f.binary,
+            out.append(Proc(id: id, ppid: b.ppid, parent: f.parent, folder: f.folder, binary: f.binary,
                             config: f.config, cpuNs: u.cpu, mem: u.mem))
         }
         fixed = nextFixed
