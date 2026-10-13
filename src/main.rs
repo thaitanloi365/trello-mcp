@@ -350,7 +350,10 @@ fn mask(value: &str) -> String {
 }
 
 fn serve(config_path: &str) -> anyhow::Result<()> {
-    let runtime = tokio::runtime::Runtime::new()?;
+    // One stdio client: a current-thread runtime is enough and saves a worker thread per core.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     let manager = Arc::new(config::Manager::new(config_path)?);
     manager.effective()?.validate(true)?;
     let result = runtime.block_on(async {
