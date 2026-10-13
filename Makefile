@@ -1,4 +1,13 @@
-.PHONY: install build test lint fmt check release clean
+# The menu bar app (macOS). A space in the name: quote every path that holds $(APP).
+TRAY        := trello-mcp-tray
+TRAY_SRC    := tray/main.swift tray/Panel.swift tray/Procs.swift
+APP         := Trello MCP.app
+AGENT       := com.trellomcp.tray
+AGENT_PLIST := $(HOME)/Library/LaunchAgents/$(AGENT).plist
+APP_DIR     := $(HOME)/Applications
+SELFTEST    := $(or $(TMPDIR),/tmp)/$(TRAY)-selftest
+
+.PHONY: install build test lint fmt check release clean tray tray-test icon tray-install tray-uninstall
 
 # Build and replace bin/trello-mcp. install(1) writes a new inode, so a
 # running server and macOS code signing stay intact.
@@ -31,3 +40,8 @@ release:
 # Drops build caches only; bin/trello-mcp stays.
 clean:
 	cargo clean
+
+# No XCTest target; the tray's pure parts and libproc calls are checked behind -D SELFTEST, as in claude-usage.
+tray-test: ## check the tray's rules, text, libproc calls and stop path
+	swiftc -D SELFTEST -suppress-warnings $(wildcard $(TRAY_SRC)) -o $(SELFTEST)
+	$(SELFTEST)
