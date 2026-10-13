@@ -132,6 +132,8 @@ From top to bottom:
    the right. Under them, the tray's own usage: `Tray: CPU 0.1% · Memory 21 MB` (12, muted).
 
 The middle (totals and table) scrolls once it is taller than the screen allows, as in claude-usage.
+The scroll view runs into the panel's 16 pt right margin, and its small overlay scroller sits there,
+so the scroller never covers the MEMORY column and a legacy scroller never narrows the rows.
 
 **Menu bar item:** the board mark as a template image, about 16 pt. Tooltip and VoiceOver label
 "Trello MCP". Clicking it toggles the panel. There is no menu.
@@ -178,12 +180,10 @@ also take focus from the non-activating panel.
   - closed: CPU 0.0% and memory at or below claude-usage's tray;
   - open with 10 servers: under 0.5% CPU on average.
 - **Measured (installed tray, 2026-10-13):**
-  - closed: 17 MB `phys_footprint`, CPU 0.0% (`ps`, and `top` over 4 samples 2 s apart); claude-usage's
+  - closed: 26 MB `phys_footprint`, CPU 0.0% (`ps`, and `top` over 4 samples 2 s apart); claude-usage's
     tray measured 32 MB and 0.0% on the same Mac;
   - open with 11 servers and one row expanded: 0.14% CPU over 20 s (1.85-2.42 ms per sample and tick), 26-27 MB,
-    measured with a driver that runs the tray's own sample and tick code. The closed figure of 17 MB holds
-    only before the first open; after the first open, the closed footprint stays at about 26 MB, still under
-    claude-usage's 32 MB. Re-measured after reinstalling, panel never opened: 26 MB `phys_footprint`, CPU 0.0% (`ps`).
+    measured with a driver that runs the tray's own sample and tick code.
 
 ## Lighter server
 

@@ -105,9 +105,10 @@ precondition(folder(of: getpid()) == FileManager.default.currentDirectoryPath, "
 precondition(args(of: getpid()) == CommandLine.arguments, "own args")
 precondition(userPids().contains(getpid()), "own pid is listed")
 guard let u0 = usage(of: getpid()) else { fatalError("own usage reads") }
-let spin = Date()
+// Spin until 0.3 s of CPU is charged, not 0.3 s of wall time: a loaded Mac only makes this take longer.
+let c0 = clock_gettime_nsec_np(CLOCK_PROCESS_CPUTIME_ID)
 var n = 0
-while Date().timeIntervalSince(spin) < 0.3 { n &+= 1 }
+while clock_gettime_nsec_np(CLOCK_PROCESS_CPUTIME_ID) - c0 < 300_000_000 { n &+= 1 }
 let burnt = Double(usage(of: getpid())!.cpu - u0.cpu) / 1e9
 precondition(u0.mem > 1 << 20 && (0.15...0.6).contains(burnt), "usage: \(u0.mem) B, \(burnt) s CPU for 0.3 s busy (ticks converted)")
 precondition(usage(of: -1) == nil && bsdInfo(-1) == nil && procName(-1) == nil, "no process")
@@ -177,16 +178,16 @@ pm.stats = trayStats(cpu: 0.1, mem: 21 << 20)
 pm.rows = rs
 pm.open = rs[1].id
 pm.error = stopFailure(20, EPERM)
-precondition(panelSize().width == 380, "panel with rows, an open row and an error: \(panelSize())")
+precondition(panelSize().width == 360, "panel with rows, an open row and an error: \(panelSize())")
 let wide = Proc(id: ServerID(pid: 99999, start: t0), ppid: 500, parent: "claude", folder: "/Users/me/" + String(repeating: "very_long_project_name_", count: 3),
                 binary: "/Users/me/bin/trello-mcp", config: nil, cpuNs: 0, mem: 1229 << 20)
 pm.rows = rows([wide], cpu: [wide.id: 143.2], stopping: [], home: h)
-precondition(panelSize().width == 380, "long label, 143% and 1.2 GB keep the width: \(panelSize())")
+precondition(panelSize().width == 360, "long label, 143% and 1.2 GB keep the width: \(panelSize())")
 pm.rows = (1...40).map { i in Row(proc: proc(pid_t(1000 + i), "/Users/me/P/project\(i)", start: t0 + UInt64(i)), label: "project\(i)", cpu: 0, status: .idle) }
 pm.cap = 400
 precondition(panelSize().height < 400 + 220, "40 rows scroll inside the cap: \(panelSize())")
 // A re-render keeps the scroll offset while the panel shows (hosted in a real window, off screen, so layout runs).
-let host = NSWindow(contentRect: NSRect(x: -10000, y: 0, width: 380, height: 800), styleMask: [.borderless], backing: .buffered, defer: false)
+let host = NSWindow(contentRect: NSRect(x: -10000, y: 0, width: 360, height: 800), styleMask: [.borderless], backing: .buffered, defer: false)
 host.contentViewController = pc
 host.orderFront(nil)
 func clip() -> NSClipView { ((pc.view.subviews.first as! NSStackView).arrangedSubviews[1] as! NSScrollView).contentView }
@@ -206,10 +207,10 @@ precondition(clip().bounds.origin.y == 0, "a hidden panel reopens at the top")
 host.contentViewController = nil
 pm.rows = []
 pm.error = nil
-precondition(panelSize().width == 380, "empty state")
+precondition(panelSize().width == 360, "empty state")
 pc.view.appearance = NSAppearance(named: .darkAqua)
 pm.rows = rs
-precondition(panelSize().width == 380, "dark")
+precondition(panelSize().width == 360, "dark")
 
 print("tray selftest ok")
 exit(0)
