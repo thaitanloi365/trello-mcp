@@ -20,6 +20,9 @@
 		<key>SuccessfulExit</key>
 		<false/>
 	</dict>
+	<!-- Without this, launchd's default throttling can hold status item clicks and stretch the sampling timers. -->
+	<key>ProcessType</key>
+	<string>Interactive</string>
 	<key>StandardOutPath</key>
 	<string>@HOME@/Library/Logs/trello-mcp-tray.log</string>
 	<key>StandardErrorPath</key>

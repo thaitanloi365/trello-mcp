@@ -178,7 +178,7 @@ also take focus from the non-activating panel.
   - closed: CPU 0.0% and memory at or below claude-usage's tray;
   - open with 10 servers: under 0.5% CPU on average.
 - **Measured (installed tray, 2026-10-13):**
-  - closed: 16 MB `phys_footprint`, CPU 0.0% (`ps`, and `top` over 4 samples 2 s apart); claude-usage's
+  - closed: 17 MB `phys_footprint`, CPU 0.0% (`ps`, and `top` over 4 samples 2 s apart); claude-usage's
     tray measured 32 MB and 0.0% on the same Mac;
   - open: pending the visual pass.
 
