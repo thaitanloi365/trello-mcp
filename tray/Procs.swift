@@ -70,9 +70,20 @@ func parseProcArgs(_ b: [UInt8]) -> [String]? {
 /// costs a few ms; an idle server adds well under 1 ms per 2 s.
 let activeCPU: UInt64 = 2_000_000
 
-/// Folds a scan into the rows: history carries over by ServerID, gone servers drop out. Without an
-/// earlier scan (the first, or the panel just reopened) there is no CPU figure; the last activity
-/// is kept unless the server worked while the panel was closed, when its time is unknown.
+/// The tray reads the servers' CPU times this often even while the panel is closed, so ACTIVE
+/// knows when each server last worked. One scan costs about 2 ms.
+let minuteScan: TimeInterval = 60
+
+/// The previous scan as the baseline for this one; nil when it is more than three minute-scans old
+/// (the Mac slept), so work done in that gap gets no made-up time.
+func baseline(_ prev: Date?, at: Date) -> Date? {
+    guard let prev, at.timeIntervalSince(prev) <= 3 * minuteScan else { return nil }
+    return prev
+}
+
+/// Folds a scan into the rows: history carries over by ServerID, gone servers drop out. Without a
+/// baseline (the first scan, or after a long gap) there is no CPU figure; the last activity is kept
+/// unless the server worked in the gap, when its time is unknown.
 func advance(_ old: [ServerRow], _ scan: [ServerSample], prevAt: Date?, at: Date) -> [ServerRow] {
     let byID = Dictionary(old.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
     return scan.map { s in

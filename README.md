@@ -225,8 +225,10 @@ last did work, CPU and memory (as Activity Monitor counts them). Quit stops a se
 click arms a red Confirm for 3 s, the second sends SIGTERM, and SIGKILL follows after 5 s if the
 server lives on. The panel is the same layout as gws-mcp's tray.
 
-It reads processes only while its panel is open (libproc, every 2 s; no `ps`) and sits idle
-otherwise.
+It reads processes with libproc (no `ps`): every 2 s while its panel is open, and once a minute
+while it is closed (about 2 ms a scan), so ACTIVE shows when each server last did work. ACTIVE
+`—` means not seen working yet, not idle: the leftovers to quit are under "No session", whose
+Claude session has closed.
 
     make tray-install     # build dist/Trello MCP.app, install it to ~/Applications, start it now and at login
     make tray-uninstall   # stop it and remove the login item and the app

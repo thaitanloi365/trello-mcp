@@ -1,6 +1,7 @@
 // trello-mcp-tray: a menu bar item whose panel lists the running trello-mcp servers with their
-// CPU and memory and can stop one. It samples only while the panel shows (libproc, 0.5 s after
-// opening, then every 2 s; the scan runs off the main thread) and sits idle otherwise. `make tray-install`
+// CPU and memory and can stop one. It scans with libproc off the main thread: once a minute so ACTIVE
+// knows when each server last worked, and while the panel shows 0.5 s after opening, then every 2 s.
+// While the panel is closed nothing is drawn. `make tray-install`
 // starts it at login through ~/Library/LaunchAgents/com.trellomcp.tray.plist, which passes
 // --cli <this checkout's bin/trello-mcp> and points stdout/stderr at ~/Library/Logs/trello-mcp-tray.log.
 import AppKit
@@ -67,7 +68,11 @@ precondition(r4[0].lastActive == t0 + 4 && r4[0].cpu == 0, "activity is remember
 let r5 = advance(r4, [srv(1, cpu: 4_000_000)], prevAt: nil, at: t0 + 9000)
 precondition(r5[0].lastActive == t0 + 4 && r5[0].cpu == nil, "a panel reopened: no CPU from a stale baseline, activity kept")
 let r6 = advance(r4, [srv(1, cpu: 4_000_000 + activeCPU)], prevAt: nil, at: t0 + 9000)
-precondition(r6[0].lastActive == nil && r6[0].cpu == nil, "worked while the panel was closed: when is unknown")
+precondition(r6[0].lastActive == nil && r6[0].cpu == nil, "worked during a gap with no baseline: when is unknown")
+precondition(baseline(t0, at: t0 + 60) == t0 && baseline(t0, at: t0 + 180) == t0 && baseline(t0, at: t0 + 181) == nil
+    && baseline(nil, at: t0) == nil, "baseline: the previous scan, up to three minutes old")
+let r7 = advance(r4, [srv(1, cpu: 4_000_000 + activeCPU)], prevAt: baseline(t0 + 64, at: t0 + 124), at: t0 + 124)
+precondition(r7[0].lastActive == t0 + 124, "a minute scan while the panel is closed dates the work")
 let reused = advance(r4, [srv(1, cpu: 9_000_000, start: s0 + 1)], prevAt: t0 + 64, at: t0 + 66)
 precondition(reused[0].lastActive == nil && reused[0].cpu == nil, "a reused pid starts fresh")
 precondition(advance(r4, [], prevAt: t0 + 64, at: t0 + 66).isEmpty, "gone servers drop out")
@@ -274,6 +279,12 @@ spinUntil(3) { !alive(o.id, name: serverName) }
 precondition(!alive(o.id, name: serverName) && tr.model.stopping == [o.id], "SIGTERM stops it; Quitting… stays until a scan sees it gone")
 scanNow()
 precondition(tr.model.stopping.isEmpty && !tr.model.rows.contains { $0.id == o.id }, "the next scan drops the row and ends Quitting…")
+let before7 = tr.scannedAt!
+tr.startMinuteScans()
+spinUntil { !tr.scanning }
+precondition(tr.scannedAt! > before7 && tr.minuteTimer?.isValid == true && tr.minuteTimer?.timeInterval == 60 && tr.minuteTimer?.tolerance == 15,
+             "minute scans: one at once, then every 60 s with 15 s tolerance")
+tr.minuteTimer?.invalidate()
 try? FileManager.default.removeItem(at: dir)
 
 // Menu bar icon and panel rendering.
@@ -366,11 +377,12 @@ final class Tray: NSObject, NSApplicationDelegate {
     let scanQueue = DispatchQueue(label: "trello-mcp-tray.scan", qos: .utility)
     var scanning = false                    // a scan is in flight (main thread only)
     var afterScan: [() -> Void] = []        // run when the scan in flight lands
-    var scannedAt: Date?                    // the previous scan; nil after the panel opens: a closed panel has no baseline
+    var scannedAt: Date?                    // the previous scan: the baseline for CPU and ACTIVE (see baseline)
     var traySample: (cpu: UInt64, at: Date)?    // the tray's own previous sample
     var opening = false                     // the first scan of an open is in flight
     var clicks: Any?            // watches clicks in other apps while the panel shows
     var timer: Timer?           // the next scan, only while the panel shows
+    var minuteTimer: Timer?     // a scan a minute, panel open or not
 
     func applicationDidFinishLaunching(_ n: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -389,6 +401,17 @@ final class Tray: NSObject, NSApplicationDelegate {
         window.hidesOnDeactivate = false
         window.isReleasedWhenClosed = false
         window.onClose = { [unowned self] in closePanel() }
+        startMinuteScans()
+    }
+
+    /// A scan now and then every minute, panel open or not, so ACTIVE knows when each server last
+    /// worked. About 2 ms a scan; while the panel is closed it only updates the model.
+    func startMinuteScans() {
+        scan()
+        let t = Timer(timeInterval: minuteScan, repeats: true) { [unowned self] _ in scan() }
+        t.tolerance = 15
+        RunLoop.main.add(t, forMode: .common)
+        minuteTimer = t
     }
 
     @objc func togglePanel() { if window.isVisible { closePanel() } else { openPanel() } }
@@ -397,8 +420,6 @@ final class Tray: NSObject, NSApplicationDelegate {
         guard !opening, let b = item.button, let bar = b.window else { return }
         let r = bar.convertToScreen(b.convert(b.bounds, to: nil)), vis = (bar.screen ?? NSScreen.main)?.visibleFrame ?? .zero
         model.cap = bar.frame.minY - vis.minY - 160    // room for header and footer; the bar's bottom edge, since an auto-hidden menu bar is inside visibleFrame
-        scannedAt = nil                 // CPU since the panel last closed would be a stale average
-        traySample = nil
         opening = true
         scan { [unowned self] in        // the panel appears with the first scan in it, not empty
             opening = false
@@ -463,7 +484,7 @@ final class Tray: NSObject, NSApplicationDelegate {
             model.stats = trayStats(traySample, cpu: u.cpu, mem: u.mem, at: at)
             traySample = (u.cpu, at)
         }
-        model.rows = advance(model.rows, found, prevAt: scannedAt, at: at)
+        model.rows = advance(model.rows, found, prevAt: baseline(scannedAt, at: at), at: at)
         scannedAt = at
     }
 

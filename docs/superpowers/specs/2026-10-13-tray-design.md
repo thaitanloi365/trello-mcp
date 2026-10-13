@@ -92,10 +92,10 @@ Ported from gws-mcp's tray (`Servers.swift`).
   full binary path.
 - **UP:** the session's age, from the parent's start time: `3d 9h`, `2h 0m`, `45m`; `—` without a session.
 - **ACTIVE:** the last scan in which the server used at least 2 ms of CPU: `now` under a minute,
-  `12m ago`, `3h ago`, `2d ago`; `—` until seen. The panel keeps it across closes and reopens by
-  (pid, start time), but never counts the CPU of a closed period (the first scan after opening has
-  no baseline). If the server used 2 ms or more while the panel was closed, ACTIVE shows `—`: it
-  worked, but when is unknown.
+  `12m ago`, `3h ago`, `2d ago`; `—` until seen. The tray scans once a minute even while the panel
+  is closed, so ACTIVE is right to within a minute. Each scan compares with the previous one, if it
+  is at most three minutes old; after a longer gap (the Mac slept) work done in the gap shows `—`:
+  it worked, but when is unknown. `—` never means idle: the "No session" group holds the leftovers.
 - **CPU:** percent of one core between two scans, `—` before the second. `0.6%`, `143%` from 100.
   No threshold colors.
 - **Memory text:** `8.2 MB` under 10 MB, `49 MB` from 10 MB, `1.2 GB` from 1024 MB.
@@ -166,7 +166,9 @@ expandable details. There is no dialog: it would take focus from the non-activat
 
 ## Keeping the tray light
 
-- **Closed panel:** no timers and no sampling. The tray sits idle at about 0.0% CPU.
+- **Closed panel:** one scan a minute (about 2 ms, timer tolerance 15 s), which only updates the
+  model; nothing is drawn. This replaced "no timers while closed": without it ACTIVE showed `—` for
+  servers in use, which read as idle.
 - **Open panel:**
   - The first scan runs on open (the panel appears with it in), the second 0.5 s later so CPU %
     shows almost at once, then one every 2 s.
