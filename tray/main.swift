@@ -23,7 +23,8 @@ func boardImage() -> NSImage {
 
 #if SELFTEST
 // The fake server below is this binary copied as trello-mcp: copies of system binaries (arm64e) are killed on launch.
-if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "serve" { while true { sleep(60) } }
+// It exits on its own after 30 s, so a run that fails midway leaves no server behind for long.
+if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "serve" { sleep(30); exit(0) }
 
 // Which trello-mcp processes are servers.
 precondition(isServer(["/x/trello-mcp", "serve"]) && isServer(["/x/trello-mcp"]), "serve, no arguments")
@@ -223,6 +224,56 @@ stop(sid, name: "sleep", grace: 0.3) { _ in answered = true }
 RunLoop.main.run(until: Date().addingTimeInterval(0.6))
 stubborn.waitUntilExit()
 precondition(answered && stubborn.terminationReason == .uncaughtSignal && stubborn.terminationStatus == SIGKILL, "SIGKILL after the grace period")
+
+// The Tray's own scan, apply and stop flow (no status item needed).
+_ = NSApplication.shared
+func spinUntil(_ timeout: TimeInterval = 8, _ done: () -> Bool) {
+    let end = Date().addingTimeInterval(timeout)
+    while !done() && Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+}
+let tr = Tray()
+func scanNow() { var landed = false; tr.scan { landed = true }; spinUntil { landed } }
+var landedAt: [Date?] = []
+tr.scan { landedAt.append(tr.scannedAt) }
+tr.scan { landedAt.append(tr.scannedAt) }      // one is in flight: this request waits for it
+precondition(tr.scanning, "a scan is in flight")
+spinUntil { landedAt.count == 2 }
+precondition(landedAt.count == 2 && landedAt[0] != nil && landedAt[0] == landedAt[1] && !tr.scanning && tr.afterScan.isEmpty,
+             "two requests share one scan and one apply: \(landedAt)")
+RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+precondition(tr.scannedAt == landedAt[0], "no second scan was started behind the first")
+tr.scan { landedAt.append(tr.scannedAt) }
+spinUntil { landedAt.count == 3 }
+precondition(landedAt.count == 3 && landedAt[2]! > landedAt[0]!, "a request after it lands runs a new scan")
+let keep = srv(4242), gone = ServerID(pid: 999_999, start: 1)
+tr.model.stopping = [keep.id, gone]
+tr.apply([keep], at: Date())
+precondition(tr.model.stopping == [keep.id], "apply ends Quitting… only for servers that are gone: \(tr.model.stopping)")
+tr.model.stopping = []
+// A server whose session (its parent) exits loses the session on the next scan; Quit then stops it.
+let sh = Process()
+sh.executableURL = URL(fileURLWithPath: "/bin/sh")
+sh.arguments = ["-c", "\"$0\" serve & sleep 1", fake.path]
+sh.currentDirectoryURL = dir
+try! sh.run()
+var adopted: ServerRow?
+for _ in 0..<40 where adopted == nil {
+    scanNow()
+    adopted = tr.model.rows.first { $0.s.ppid == sh.processIdentifier }
+}
+guard let o = adopted else { fatalError("the fake server under sh is found") }
+precondition(o.s.folder == realPath(dir.path) && o.s.parentStarted == bsdInfo(sh.processIdentifier)?.start,
+             "its session is sh: folder and start are sh's: \(o.s)")
+sh.waitUntilExit()
+scanNow()
+let lost = tr.model.rows.first { $0.id == o.id }
+precondition(lost?.s.ppid == 1 && lost?.s.folder == nil && lost?.s.parentStarted == nil, "its parent exited: no session: \(String(describing: lost))")
+tr.stopServer(o.id)
+precondition(tr.model.stopping == [o.id], "Quit marks the row Quitting…")
+spinUntil(3) { !alive(o.id, name: serverName) }
+precondition(!alive(o.id, name: serverName) && tr.model.stopping == [o.id], "SIGTERM stops it; Quitting… stays until a scan sees it gone")
+scanNow()
+precondition(tr.model.stopping.isEmpty && !tr.model.rows.contains { $0.id == o.id }, "the next scan drops the row and ends Quitting…")
 try? FileManager.default.removeItem(at: dir)
 
 // Menu bar icon and panel rendering.
@@ -266,6 +317,7 @@ pm.confirming = pm.rows[3].s.id
 pm.now = { t0 + 3 }
 let same = pm.rows
 pm.rows = same
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))   // a re-render a tick wrongly queued would run here
 let after = views(pc.view).compactMap { $0 as? ServerLine }
 precondition(before.count == 40 && zip(before, after).allSatisfy { $0 === $1 }, "a tick keeps the row views")
 precondition(after[0].values[4] == "2.5%" && after[0].values[3] == "now" && after.filter { $0.title == "Confirm" }.map { $0.values[0] } == ["\(pm.rows[3].s.id.pid)"] && after.filter { $0.title == "Quit" }.count == 39, "a tick updates values and buttons: \(after[0].values)")
