@@ -318,6 +318,16 @@ spinUntil(3) { quitDone }
 precondition(quitDone && tr.dashboard == 0 && procName(d2) == nil, "Quit stops the dashboard")
 RunLoop.main.run(until: Date().addingTimeInterval(1.5))
 precondition(tr.dashboard == 0, "a stopped dashboard is not restarted")
+// Quit while a restart is pending: then runs once and no new dashboard appears.
+tr.quitting = false
+tr.startDashboard()
+let d3 = tr.dashboard
+kill(d3, SIGKILL)
+spinUntil(2) { tr.dashboard == 0 }
+var quits = 0
+tr.stopDashboard { quits += 1 }
+RunLoop.main.run(until: Date().addingTimeInterval(1.5))
+precondition(quits == 1 && tr.dashboard == 0, "Quit during a pending restart finishes once, with no new dashboard")
 tr.model.cli = ""
 try? FileManager.default.removeItem(at: dir)
 
@@ -659,17 +669,20 @@ final class Tray: NSObject, NSApplicationDelegate {
         quitting = true
         guard dashboard != 0, let src = dashWatch else { return then() }
         let pid = dashboard
+        var finished = false    // `then` runs once, from the exit event or the grace timer, whichever comes first
+        let finish = { if !finished { finished = true; then() } }
         src.setEventHandler { [unowned self] in
             var status: Int32 = 0
             waitpid(pid, &status, 0)
             src.cancel()
             dashWatch = nil
             dashboard = 0
-            then()
+            finish()
         }
         kill(pid, SIGTERM)
         DispatchQueue.main.asyncAfter(deadline: .now() + stopGrace) { [unowned self] in
             if dashboard == pid { kill(pid, SIGKILL) }
+            finish()    // also when the exit event never came (stuck in I/O) or the old handler won the race
         }
     }
 }
