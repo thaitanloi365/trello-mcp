@@ -1,5 +1,6 @@
 mod clientconfig;
 mod config;
+mod dashboard;
 mod mcp;
 mod trello;
 mod util;

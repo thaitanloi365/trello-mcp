@@ -48,6 +48,17 @@ pub fn path_unescape(value: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
+/// "now" under a minute, then "12m ago", "3h ago", "2d ago".
+pub fn ago(seconds: f64) -> String {
+    let m = (seconds / 60.0).max(0.0) as i64;
+    match m {
+        0 => "now".into(),
+        1..60 => format!("{m}m ago"),
+        60..1440 => format!("{}h ago", m / 60),
+        _ => format!("{}d ago", m / 1440),
+    }
+}
+
 /// Go filepath.Abs: joins the working directory and cleans `.` and `..`
 /// lexically, without resolving symlinks. The working directory follows Go's
 /// os.Getwd, including the `$PWD` rule (see `working_dir`).
@@ -207,6 +218,20 @@ mod tests {
             std::fs::read_dir(dir.path()).unwrap().count(),
             1,
             "temporary file left behind"
+        );
+    }
+
+    #[test]
+    fn ago_counts_minutes_hours_days() {
+        assert_eq!(
+            [
+                ago(-5.0),
+                ago(59.0),
+                ago(12.0 * 60.0),
+                ago(3.0 * 3600.0),
+                ago(2.0 * 86400.0)
+            ],
+            ["now", "now", "12m ago", "3h ago", "2d ago"]
         );
     }
 }
