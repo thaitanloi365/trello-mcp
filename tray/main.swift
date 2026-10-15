@@ -108,7 +108,11 @@ let gs = groups(mix, home: h)
 precondition(gs.map(\.label) == ["a/Alpha", "a/zeta", "~", noSession], "groups: alphabetical (~ after letters), no session last: \(gs.map(\.label))")
 precondition(gs[0].rows.map(\.s.id.pid) == [2, 6, 4], "rows: oldest session first, then pid")
 precondition(gs[3].rows.map(\.s.id.pid) == [3, 7], "no session: a launchd child and an orphan of a gone parent, by start then pid")
-precondition(gs.map(groupMeta) == ["2 sessions · 23 MB", "1 session · 10 MB", "1 session · 10 MB", "20 MB"], "group meta: \(gs.map(groupMeta))")
+precondition(gs.map { groupCells($0, open: true, now: t0) } == [["3 · 2 sessions", "—", "—", "23 MB"], ["1 · 1 session", "—", "—", "10 MB"],
+                                                               ["1 · 1 session", "—", "—", "10 MB"], ["2", "—", "—", "20 MB"]],
+             "open group cells: \(gs.map { groupCells($0, open: true, now: t0) })")
+precondition(groupCells(gs[0], open: false, now: t0)[0] == "3", "a folded group shows only its server count")
+precondition(groupCells(groups(r3, home: h)[0], open: false, now: t0 + 4 + 120) == ["1", "2m ago", "0.1%", "10 MB"], "group totals: latest activity, CPU, memory")
 precondition(serverFigures(mix) == ["7", "4", "63 MB", "—"] && serverFigures(r4) == ["1", "1", "10 MB", "0.0%"], "figures: \(serverFigures(mix)) \(serverFigures(r4))")
 precondition(abs(totalCPU(advance(r1, [srv(1, cpu: 500_000_000)], prevAt: t0, at: t0 + 2))! - 25) < 1e-9 && totalCPU([]) == nil, "total cpu")
 precondition(trayStats(nil, cpu: 5, mem: 21 << 20, at: t0) == "Tray: CPU — · Memory 21 MB", "tray stats: first sample")
@@ -300,18 +304,19 @@ let shown = advance([], [srv(10, folder: "/Users/me/P/eventcreate_app", path: "/
                          srv(12, folder: nil, ppid: 1, parentStarted: nil)], prevAt: nil, at: t0)
 pm.rows = shown
 pm.error = stopFailure(20, EPERM)
-precondition(panelSize().width == 520, "panel with servers and an error: \(panelSize())")
+precondition(panelSize().width == 460, "panel with servers and an error: \(panelSize())")
 pm.confirming = shown[0].s.id
 pm.stopping = [shown[1].s.id]
-precondition(panelSize().width == 520, "a Confirm row and a Quitting… row")
+precondition(panelSize().width == 460, "a Confirm row and a Quitting… row")
 let wide = srv(99999, cpu: 0, folder: "/Users/me/" + String(repeating: "very_long_project_name_", count: 3), mem: 1229 << 20, path: "/" + String(repeating: "long_dir/", count: 20) + "trello-mcp")
 pm.rows = advance(advance([], [wide], prevAt: nil, at: t0), [srv(99999, cpu: 14_320_000_000, folder: wide.folder, mem: 1229 << 20)], prevAt: t0, at: t0 + 100)
-precondition(panelSize().width == 520, "long label, 143% and 1.2 GB keep the width: \(panelSize())")
+precondition(panelSize().width == 460, "long label, 143% and 1.2 GB keep the width: \(panelSize())")
 pm.rows = advance([], (1...40).map { i in srv(pid_t(1000 + i), folder: "/Users/me/P/project\(i)", ppid: pid_t(2000 + i), start: s0 + UInt64(i)) }, prevAt: nil, at: t0)
+pm.open = Set(groups(pm.rows, home: userHome).map(\.label))    // all open: the scroll and tick checks below need the rows
 pm.cap = 400
-precondition(panelSize().height < 400 + 220 && panelSize().width == 520, "40 rows scroll inside the cap: \(panelSize())")
+precondition(panelSize().height < 400 + 220 && panelSize().width == 460, "40 rows scroll inside the cap: \(panelSize())")
 // A re-render keeps the scroll offset while the panel shows (hosted in a real window, off screen, so layout runs).
-let host = NSWindow(contentRect: NSRect(x: -10000, y: 0, width: 520, height: 800), styleMask: [.borderless], backing: .buffered, defer: false)
+let host = NSWindow(contentRect: NSRect(x: -10000, y: 0, width: 460, height: 800), styleMask: [.borderless], backing: .buffered, defer: false)
 host.contentViewController = pc
 host.orderFront(nil)
 func clip() -> NSClipView { ((pc.view.subviews.first as! NSStackView).arrangedSubviews[1] as! NSScrollView).contentView }
@@ -333,6 +338,21 @@ let after = views(pc.view).compactMap { $0 as? ServerLine }
 precondition(before.count == 40 && zip(before, after).allSatisfy { $0 === $1 }, "a tick keeps the row views")
 precondition(after[0].values[4] == "2.5%" && after[0].values[3] == "now" && after.filter { $0.title == "Confirm" }.map { $0.values[0] } == ["\(pm.rows[3].s.id.pid)"] && after.filter { $0.title == "Quit" }.count == 39, "a tick updates values and buttons: \(after[0].values)")
 precondition(clip().bounds.origin.y == 500, "a tick keeps the scroll offset")
+// Folding: a folded group hides its rows; a click opens it; a tick updates its totals in place.
+let allOpen = pm.open
+pm.open = []
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+let folded = views(pc.view).compactMap { $0 as? GroupLine }
+precondition(folded.count == 40 && views(pc.view).compactMap { $0 as? ServerLine }.isEmpty && folded.allSatisfy { !$0.open }, "folded: group rows only")
+precondition(folded[0].accessibilityPerformPress() && pm.open == [folded[0].name], "a click opens the group")
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+let opened = views(pc.view).compactMap { $0 as? GroupLine }
+precondition(views(pc.view).compactMap { $0 as? ServerLine }.count == 1 && opened[0].open && opened[0].cells[0] == "1 · 1 session",
+             "the opened group shows its row and sessions: \(opened[0].cells)")
+pm.rows = advance(pm.rows, pm.rows.map { r in srv(r.s.id.pid, cpu: 150_000_000, folder: r.s.folder, ppid: r.s.ppid, start: r.s.id.start) }, prevAt: t0 + 2, at: t0 + 4)
+precondition(views(pc.view).compactMap { $0 as? GroupLine }[0] === opened[0] && opened[0].cells[2] == "5.0%", "a tick updates a group's totals in place: \(opened[0].cells)")
+pm.open = allOpen
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 pm.rows = Array(pm.rows.prefix(8))
 pc.render()
 let docH = clip().documentView!.frame.height
@@ -343,16 +363,44 @@ precondition(clip().bounds.origin.y == 0, "a hidden panel reopens at the top")
 host.contentViewController = nil
 pm.rows = []
 pm.error = nil
-precondition(panelSize().width == 520, "empty state")
+precondition(panelSize().width == 460, "empty state")
 pm.error = "Could not stop PID 4648: Operation not permitted"
-precondition(panelSize().width == 520, "empty state with an error")
+precondition(panelSize().width == 460, "empty state with an error")
 pm.error = nil
 pc.view.appearance = NSAppearance(named: .darkAqua)
 pm.rows = shown
-precondition(panelSize().width == 520, "dark")
+precondition(panelSize().width == 460, "dark")
 pc.view.appearance = NSAppearance(named: .aqua)
-precondition(panelSize().width == 520, "light")
+precondition(panelSize().width == 460, "light")
 
+// Footer: Dashboard and via Tailscale open their URLs, no --cli hides both, the chips set the theme.
+func presses(_ v: NSView) -> [Press] { ((v as? Press).map { [$0] } ?? []) + v.subviews.flatMap(presses) }
+func titled(_ t: String) -> Press? { pc.render(); return presses(pc.view).first { $0.accessibilityLabel() == t } }
+/// Sends a button's action to its target, as a click does.
+func press(_ b: Press?) {
+    guard let b, let t = b.target as? NSObject, let a = b.action else { preconditionFailure("no such button") }
+    _ = t.perform(a)
+}
+var visited: [URL] = []
+pm.onDashboard = { visited.append($0) }
+pm.tailnet = nil
+precondition(titled("via Tailscale") == nil, "no --tailscale: no tailnet button")
+press(titled("Dashboard"))
+pm.tailnet = URL(string: "https://mac.example.ts.net:8448")
+press(titled("via Tailscale"))
+precondition(visited == [dashboardURL, URL(string: "https://mac.example.ts.net:8448")!] && dashboardURL.absoluteString == "http://127.0.0.1:8790",
+             "dashboard buttons: \(visited)")
+let keptCLI = pm.cli
+pm.cli = ""
+precondition(titled("Dashboard") == nil && titled("via Tailscale") == nil, "no --cli: no dashboard, no buttons")
+pm.cli = keptCLI
+var themes: [Theme] = []
+pm.onTheme = { themes.append($0) }
+press(titled("Dark theme"))
+precondition(pm.theme == .dark && themes == [.dark], "the DARK chip sets the theme")
+precondition(Theme.auto.appearance == nil && Theme.dark.appearance?.name == .darkAqua && Theme.light.appearance?.name == .aqua, "theme appearances")
+pm.theme = .auto
+precondition(panelSize().width == 460, "the footer with all its buttons keeps the width")
 print("tray selftest ok")
 exit(0)
 #endif

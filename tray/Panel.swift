@@ -15,6 +15,9 @@ final class PanelModel {
     var cap: CGFloat = 800 { didSet { changed() } }     // tallest the scrolling middle may be; Tray sets it from the screen
     var stats = "" { didSet { ticked() } }               // the tray's own CPU and memory
     var cli = ""                                         // the tray's CLI path, for Build's "installed"
+    var open: Set<String> = [] { didSet { changed() } }      // open groups, by label; every group starts folded
+    var theme: Theme = .auto { didSet { onTheme(theme); changed() } }
+    var tailnet: URL?                                        // the dashboard through Tailscale; nil hides its button
     var now: () -> Date = Date.init
     var changed: () -> Void = {}                         // set by PanelController
     var ticked: () -> Void = {}                          // set by PanelController
@@ -22,6 +25,8 @@ final class PanelModel {
     var onStop: (ServerID) -> Void = { _ in }
     var onLog: () -> Void = {}
     var onQuit: () -> Void = {}
+    var onDashboard: (URL) -> Void = { _ in }
+    var onTheme: (Theme) -> Void = { _ in }
 
     private var confirmTimer: DispatchWorkItem?
 
@@ -42,7 +47,19 @@ final class PanelModel {
         confirming = nil
         onStop(id)
     }
+
+    /// A click on a group row folds or opens it.
+    func toggle(_ label: String) { if open.contains(label) { open.remove(label) } else { open.insert(label) } }
 }
+
+/// The panel's look: Auto follows macOS.
+enum Theme: String, CaseIterable {
+    case auto, light, dark
+    var appearance: NSAppearance? { self == .auto ? nil : NSAppearance(named: self == .dark ? .darkAqua : .aqua) }
+}
+
+/// The dashboard `trello-mcp dashboard` serves on this Mac.
+let dashboardURL = URL(string: "http://127.0.0.1:8790")!
 
 // MARK: - Palette
 
@@ -233,9 +250,10 @@ final class Press: NSButton {
 }
 
 /// A text-only button (the design's .txt): red ink while hot.
-func txtBtn(_ p: Pal, _ title: String, _ w: W, color: NSColor? = nil, pad: (CGFloat, CGFloat), key: String = "", _ act: @escaping () -> Void) -> Press {
-    let l = label(title, 13, w, color ?? p.ink)
-    let b = Press(l, pad: pad, minHeight: 36, act)
+func txtBtn(_ p: Pal, _ title: String, _ w: W, size: CGFloat = 13, minHeight: CGFloat = 36, color: NSColor? = nil,
+            pad: (CGFloat, CGFloat), key: String = "", _ act: @escaping () -> Void) -> Press {
+    let l = label(title, size, w, color ?? p.ink)
+    let b = Press(l, pad: pad, minHeight: minHeight, act)
     b.paint = { _, hot in recolor(l, hot ? p.redInk : color ?? p.ink) }
     b.keyEquivalent = key
     b.keyEquivalentModifierMask = .command
@@ -243,10 +261,31 @@ func txtBtn(_ p: Pal, _ title: String, _ w: W, color: NSColor? = nil, pad: (CGFl
     return b
 }
 
+/// A square chip of the theme switch (the design's chip): ink-filled when chosen or hot.
+func chip(_ p: Pal, _ title: String, on: Bool, _ act: @escaping () -> Void) -> Press {
+    let l = label(title, 10, .b, em: 0.06, on ? p.paper : p.ink)
+    let b = Press(l, pad: (7, 7), minHeight: 18, act)
+    b.layer?.borderWidth = 1
+    b.layer?.borderColor = p.ink.cgColor
+    b.paint = { b, hot in
+        b.layer?.backgroundColor = on || hot ? p.ink.cgColor : nil
+        recolor(l, on || hot ? p.paper : p.ink)
+    }
+    b.setAccessibilityLabel("\(title.capitalized) theme")
+    return b
+}
+
+/// One line of text in `r`, cut at the tail.
+func drawText(_ s: String, _ r: NSRect, _ size: CGFloat, _ w: W, _ c: NSColor, _ align: NSTextAlignment) {
+    let ps = NSMutableParagraphStyle()
+    ps.alignment = align
+    ps.lineBreakMode = .byTruncatingTail
+    NSAttributedString(string: s, attributes: [.font: hvFont(size, w), .foregroundColor: c, .paragraphStyle: ps]).draw(in: r)
+}
 
 // MARK: - Panel
 
-let panelWidth: CGFloat = 520
+let panelWidth: CGFloat = 460
 let inner: CGFloat = panelWidth - 32     // the rows' width: the panel less its 16 pt margins
 
 /// The panel's content: rebuilt from the model on each change of shape while it shows.
@@ -255,7 +294,7 @@ final class PanelController: NSViewController {
     private var queued = false
     // What a tick updates in place; filled by render().
     private var lines: [ServerID: ServerLine] = [:]
-    private var groupMetas: [String: GroupLine] = [:]
+    private var groupLines: [String: GroupLine] = [:]
     private var figures: [NSTextField] = []     // servers, sessions, memory, CPU
     private var statsRef: NSTextField?
     private var scrollRef: NSScrollView?
@@ -290,12 +329,12 @@ final class PanelController: NSViewController {
         let dark = view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         p = pal(dark: dark)
         lines = [:]
-        groupMetas = [:]
+        groupLines = [:]
         figures = []
         let keptY = view.window?.isVisible == true ? scrollRef?.contentView.bounds.origin.y ?? 0 : 0     // a re-render keeps the scroll position
         // Header and footer stay put; the middle scrolls once it outgrows the screen.
         // The scroll view runs into the right margin, so its thin overlay scroller sits there and never covers or narrows the rows.
-        let mid = vstack(middle(), 16, inset: edges(0, 0, 0, 16))
+        let mid = vstack(middle(), 10, inset: edges(0, 0, 0, 16))
         mid.widthAnchor.constraint(equalToConstant: panelWidth - 16).isActive = true
         let h = mid.fittingSize.height
         let scroll = NSScrollView()
@@ -312,7 +351,7 @@ final class PanelController: NSViewController {
             mid.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             scroll.heightAnchor.constraint(equalToConstant: min(h, m.cap)),
         ])
-        let col = vstack([pad(header(), edges(0, 0, 0, 16)), scroll, pad(footer(), edges(0, 0, 0, 16))], 16, inset: edges(16, 16, 16, 0))
+        let col = vstack([pad(header(), edges(0, 0, 0, 16)), scroll, pad(footer(), edges(0, 0, 0, 16))], 10, inset: edges(12, 16, 10, 0))
         col.translatesAutoresizingMaskIntoConstraints = false
         view.subviews.forEach { $0.removeFromSuperview() }
         view.addSubview(col)
@@ -331,7 +370,7 @@ final class PanelController: NSViewController {
         }
     }
 
-    /// New numbers for the same rows: values, buttons, group metas, figures and stats in place.
+    /// New numbers for the same rows: values, buttons, group totals, figures and stats in place.
     func tick() {
         guard view.window?.isVisible == true else { return }
         let now = m.now()
@@ -340,7 +379,7 @@ final class PanelController: NSViewController {
             l.values = serverCells(r, now: now)
             l.action = action(r.id)
         }
-        for g in groups(m.rows, home: home) { groupMetas[g.label]?.meta = groupMeta(g) }
+        for g in groups(m.rows, home: home) { groupLines[g.label]?.cells = groupCells(g, open: m.open.contains(g.label), now: now) }
         zip(figures, serverFigures(m.rows)).forEach { setText($0, $1, p.ink) }
         if let s = statsRef, !m.stats.isEmpty { setText(s, m.stats, p.muted) }
     }
@@ -358,40 +397,48 @@ final class PanelController: NSViewController {
     }
 
     func header() -> NSView {
-        let top = hstack([hstack([boardMark(22, p.ink), label("Trello MCP", 15, .b, em: -0.02, p.ink)], 8), spacer(),
-                          label("live · every 2 s", 12, p.muted)], 12)
-        return vstack([top, block(p.ink, h: 4)], 12)
+        let top = hstack([hstack([boardMark(16, p.ink), label("Trello MCP", 13, .b, em: -0.02, p.ink)], 7), spacer(),
+                          label("live · every 2 s", 11, p.muted)], 12)
+        return vstack([top, block(p.ink, h: 4)], 8)
     }
 
+    /// Dashboard links and the theme switch, then the tray's own usage, Open Log and Quit.
     func footer() -> NSView {
-        let row = hstack([
-            txtBtn(p, "Open Log", .b, pad: (0, 8), key: "l") { [unowned self] in m.onLog() },
-            spacer(),
-            txtBtn(p, "Quit", .r, color: p.muted, pad: (8, 0), key: "q") { [unowned self] in m.onQuit() },
-        ], 4)
-        let s = label(m.stats.isEmpty ? "Tray: —" : m.stats, 12, p.muted)
+        var links: [NSView] = []
+        if !m.cli.isEmpty {     // without --cli the tray starts no dashboard
+            links.append(txtBtn(p, "Dashboard", .b, size: 12.5, minHeight: 30, pad: (0, 8), key: "d") { [unowned self] in m.onDashboard(dashboardURL) })
+            if let u = m.tailnet {
+                links.append(txtBtn(p, "via Tailscale", .b, size: 12.5, minHeight: 30, pad: (8, 8)) { [unowned self] in m.onDashboard(u) })
+            }
+        }
+        let themes = hstack(Theme.allCases.map { t in chip(p, t.rawValue.uppercased(), on: m.theme == t) { [unowned self] in m.theme = t } }, 0)
+        let s = label(m.stats.isEmpty ? "Tray: —" : m.stats, 11, p.muted)
         statsRef = s
-        return vstack([block(p.ink, h: 1), row, s], 3)
+        let tools = hstack([s, spacer(),
+                            txtBtn(p, "Open Log", .r, size: 11, minHeight: 24, pad: (8, 8), key: "l") { [unowned self] in m.onLog() },
+                            txtBtn(p, "Quit", .r, size: 11, minHeight: 24, pad: (8, 0), key: "q") { [unowned self] in m.onQuit() }], 0)
+        return vstack([block(p.ink, h: 1), hstack(links + [spacer(), themes], 4), tools], 2)
     }
 
-    func caps(_ s: String, align: NSTextAlignment = .left) -> NSTextField { label(s, 11, .m, em: 0.06, p.muted, align: align) }
+    func caps(_ s: String, align: NSTextAlignment = .left) -> NSTextField { label(s, 10, .m, em: 0.06, p.muted, align: align) }
 
     // MARK: Servers
 
-    /// Figures (servers, sessions, memory, CPU), then the table: PID, build, up, active, CPU, memory and the button, grouped by session folder.
+    /// Figures (servers, sessions, memory, CPU), then the table grouped by session folder: a group
+    /// row each, with its servers under it while it is open.
     func servers() -> NSView {
-        let title = vstack([caps("TRELLO-MCP SERVERS"), block(p.ink, h: 1)], 5)
         let now = m.now()
         let figs = hstack(zip(["SERVERS", "SESSIONS", "MEMORY", "CPU"], serverFigures(m.rows)).map { n, v in
-            let f = label(v, 24, .b, em: -0.02, p.ink)
+            let f = label(v, 17, .b, em: -0.02, p.ink)
             figures.append(f)
-            return vstack([caps(n), f], 2)
-        } + [spacer()], 20, top: true)
+            return vstack([caps(n), f], 1)
+        } + [spacer()], 22, top: true)
         let head = line(caps("PID", align: .right), caps("BUILD"), caps("UP", align: .right), caps("ACTIVE", align: .right),
                         caps("CPU", align: .right), caps("MEM", align: .right), NSView())
-        let rows = Rows(groups(m.rows, home: home).flatMap { g in [groupHead(g.label, groupMeta(g))] + g.rows.map { server($0, now) } })
-        let s = vstack([title, figs, vstack([head, block(p.ink, h: 1)], 5), rows])
-        s.setCustomSpacing(8, after: title)
+        let rows = Rows(groups(m.rows, home: home).flatMap { g in
+            [groupHead(g, now) as NSView] + (m.open.contains(g.label) ? g.rows.map { server($0, now) } : [])
+        })
+        let s = vstack([figs, vstack([head, block(p.ink, h: 1)], 4), rows])
         s.setCustomSpacing(10, after: figs)
         return s
     }
@@ -399,7 +446,15 @@ final class PanelController: NSViewController {
     /// A table line in fixed columns: PID, Build (flexible), Up, Active, CPU, Mem, action.
     func line(_ pid: NSView, _ build: NSView, _ up: NSView, _ active: NSView, _ cpu: NSView, _ mem: NSView, _ action: NSView) -> NSView {
         build.setContentCompressionResistancePriority(.init(100), for: .horizontal)
-        return hstack([fixed(pid, w: 40), stretch(build), fixed(up, w: 46), fixed(active, w: 56), fixed(cpu, w: 40), fixed(mem, w: 46), fixed(action, w: 62)], 6)
+        return hstack([fixed(pid, w: 40), stretch(build), fixed(up, w: 44), fixed(active, w: 52), fixed(cpu, w: 40), fixed(mem, w: 46), fixed(action, w: 56)], 6)
+    }
+
+    /// A group's row: a button that folds it, with its totals under the table's columns.
+    func groupHead(_ g: ServerGroup, _ now: Date) -> GroupLine {
+        let open = m.open.contains(g.label)
+        let row = GroupLine(g.label, groupCells(g, open: open, now: now), open: open, p) { [unowned self] in m.toggle(g.label) }
+        groupLines[g.label] = row
+        return row
     }
 
     func server(_ r: ServerRow, _ now: Date) -> NSView {
@@ -413,13 +468,6 @@ final class PanelController: NSViewController {
 
     func serverCells(_ r: ServerRow, now: Date) -> [String] {
         ["\(r.id.pid)", buildLabel(r.s.path, cli: m.cli), upText(r, now: now), activeText(r.lastActive, now: now), cpuText(r.cpu), memText(r.s.mem)]
-    }
-
-    /// A group's heading row: its label and, flush right, sessions and memory.
-    func groupHead(_ label: String, _ meta: String) -> GroupLine {
-        let g = GroupLine(label, meta, p)
-        groupMetas[label] = g
-        return g
     }
 
     func empty() -> NSView {
@@ -456,8 +504,8 @@ final class ServerLine: NSView {
     private var armed = false
     private lazy var button = Button(self)
     override var isFlipped: Bool { true }
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 31) }
-    var buttonRect: NSRect { NSRect(x: bounds.width - 62, y: 4, width: 62, height: 22) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 26) }
+    var buttonRect: NSRect { NSRect(x: bounds.width - 56, y: 3.5, width: 56, height: 19) }
     var title: String { action == .stopping ? "Quitting…" : action == .confirm ? "Confirm" : "Quit" }
 
     init(_ values: [String], _ p: Pal, path: String, action: Action, _ act: @escaping () -> Void) {
@@ -465,21 +513,21 @@ final class ServerLine: NSView {
         self.p = p
         self.action = action
         self.act = act
-        super.init(frame: NSRect(x: 0, y: 0, width: inner, height: 31))
+        super.init(frame: NSRect(x: 0, y: 0, width: inner, height: 26))
         toolTip = path
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect], owner: self))
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    /// Column rects from the right: button 62, mem 46, cpu 40, active 56, up 46, with 6 pt gaps; pid 40 at the left, build takes the rest.
+    /// Column rects from the right: button 56, mem 46, cpu 40, active 52, up 44, with 6 pt gaps; pid 40 at the left, build takes the rest.
     override func draw(_ dirty: NSRect) {
         let w = bounds.width
         let cols: [(CGFloat, CGFloat, NSTextAlignment, W)] = [
-            (0, 40, .right, .b), (46, w - 326, .left, .r), (w - 274, 46, .right, .r),
-            (w - 222, 56, .right, .r), (w - 160, 40, .right, .r), (w - 114, 46, .right, .b),
+            (0, 40, .right, .b), (46, w - 314, .left, .r), (w - 262, 44, .right, .r),
+            (w - 212, 52, .right, .r), (w - 154, 40, .right, .r), (w - 108, 46, .right, .b),
         ]
-        for (v, c) in zip(values, cols) { text(v, NSRect(x: c.0, y: 8, width: c.1, height: 16), 12, c.3, p.ink, c.2) }
+        for (v, c) in zip(values, cols) { drawText(v, NSRect(x: c.0, y: 5, width: c.1, height: 16), 12, c.3, p.ink, c.2) }
         // The button: outline Quit, red Confirm, dim Quitting…; ink fill while hot.
         let b = buttonRect, enabled = action != .stopping
         let (bg, fg, bd) = buttonColors(action, hot: hot, p: p)
@@ -488,16 +536,9 @@ final class ServerLine: NSView {
         bd.withAlphaComponent(enabled ? 1 : 0.4).setStroke()
         path.lineWidth = 1.5
         path.stroke()
-        text(title, NSRect(x: b.minX, y: b.minY + 4, width: b.width, height: 14), 11, .b, fg.withAlphaComponent(enabled ? 1 : 0.4), .center)
+        drawText(title, NSRect(x: b.minX, y: b.minY + 3, width: b.width, height: 13), 10.5, .b, fg.withAlphaComponent(enabled ? 1 : 0.4), .center)
         p.hair.setFill()
         NSRect(x: 0, y: bounds.height - 1, width: w, height: 1).fill()
-    }
-
-    private func text(_ s: String, _ r: NSRect, _ size: CGFloat, _ w: W, _ c: NSColor, _ align: NSTextAlignment) {
-        let ps = NSMutableParagraphStyle()
-        ps.alignment = align
-        ps.lineBreakMode = .byTruncatingTail
-        NSAttributedString(string: s, attributes: [.font: hvFont(size, w), .foregroundColor: c, .paragraphStyle: ps]).draw(in: r)
     }
 
     func setHot(_ h: Bool) { if h != hot { hot = h; setNeedsDisplay(buttonRect) } }
@@ -571,39 +612,52 @@ final class Rows: NSView {
     }
 }
 
-/// A group heading drawn in one view: the label (cut in the middle) and its meta flush right, hairline below.
+/// A group row drawn in one view, and a button that folds the group: chevron, label (cut in the
+/// middle) and count, then the group's ACTIVE, CPU and memory under the table's columns.
 final class GroupLine: NSView {
-    var meta: String { didSet { if meta != oldValue { needsDisplay = true } } }
-    private let name: String, p: Pal
+    var cells: [String] { didSet { if cells != oldValue { needsDisplay = true } } }     // count, active, cpu, mem
+    let name: String, open: Bool
+    private let p: Pal, act: () -> Void
     override var isFlipped: Bool { true }
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 35) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 28) }
 
-    init(_ name: String, _ meta: String, _ p: Pal) {
+    init(_ name: String, _ cells: [String], open: Bool, _ p: Pal, _ act: @escaping () -> Void) {
         self.name = name
-        self.meta = meta
+        self.cells = cells
+        self.open = open
         self.p = p
-        super.init(frame: NSRect(x: 0, y: 0, width: inner, height: 35))
+        self.act = act
+        super.init(frame: NSRect(x: 0, y: 0, width: inner, height: 28))
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     override func draw(_ dirty: NSRect) {
-        let ps = NSMutableParagraphStyle()
-        ps.alignment = .right
-        let m = NSAttributedString(string: meta, attributes: [.font: hvFont(12), .foregroundColor: p.muted, .paragraphStyle: ps])
-        let mw = ceil(m.size().width)
-        m.draw(in: NSRect(x: bounds.width - mw, y: 13, width: mw, height: 16))
+        let w = bounds.width
+        drawText(open ? "▼" : "▶", NSRect(x: 0, y: 8, width: 12, height: 12), 8, .r, p.muted, .left)
+        let count = NSAttributedString(string: cells[0], attributes: [.font: hvFont(11), .foregroundColor: p.muted])
+        let cw = ceil(count.size().width)
         let np = NSMutableParagraphStyle()
         np.lineBreakMode = .byTruncatingMiddle      // a long folder keeps both ends
-        NSAttributedString(string: name, attributes: [.font: hvFont(13, .b), .foregroundColor: p.ink, .paragraphStyle: np])
-            .draw(in: NSRect(x: 0, y: 12, width: bounds.width - mw - 8, height: 17))
+        let label = NSAttributedString(string: name, attributes: [.font: hvFont(12.5, .b), .foregroundColor: p.ink, .paragraphStyle: np])
+        let lw = min(ceil(label.size().width), w - 268 - 16 - cw - 6)    // up to the Up column
+        label.draw(in: NSRect(x: 16, y: 6, width: lw, height: 17))
+        count.draw(in: NSRect(x: 16 + lw + 6, y: 8, width: cw, height: 15))
+        drawText(cells[1], NSRect(x: w - 212, y: 6, width: 52, height: 16), 12, .r, p.muted, .right)
+        drawText(cells[2], NSRect(x: w - 154, y: 6, width: 40, height: 16), 12, .r, p.muted, .right)
+        drawText(cells[3], NSRect(x: w - 108, y: 6, width: 46, height: 16), 12, .b, p.ink, .right)
         p.hair.setFill()
-        NSRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1).fill()
+        NSRect(x: 0, y: bounds.height - 1, width: w, height: 1).fill()
     }
 
+    // Like a button: the click lands on mouse-up inside.
+    override func mouseDown(with e: NSEvent) {}
+    override func mouseUp(with e: NSEvent) { if bounds.contains(convert(e.locationInWindow, from: nil)) { act() } }
+
     override func isAccessibilityElement() -> Bool { true }
-    override func accessibilityRole() -> NSAccessibility.Role? { .staticText }
-    override func accessibilityLabel() -> String? { "\(name), \(meta)" }
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityLabel() -> String? { "\(name), \(open ? "open" : "folded")" }
+    override func accessibilityPerformPress() -> Bool { act(); return true }
 }
 
 private final class Root: NSView {

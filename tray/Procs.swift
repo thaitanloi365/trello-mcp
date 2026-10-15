@@ -147,10 +147,12 @@ func sessionCount(_ rows: [ServerRow]) -> Int {
     Set(rows.compactMap { r in r.s.parentStarted.map { "\(r.s.ppid) \($0)" } }).count
 }
 
-/// "4 sessions · 38 MB", or only the memory for servers with no session.
-func groupMeta(_ g: ServerGroup) -> String {
-    let n = sessionCount(g.rows), mem = memText(g.rows.reduce(0) { $0 + $1.s.mem })
-    return n == 0 ? mem : "\(n) session\(n == 1 ? "" : "s") · \(mem)"
+/// A group row's cells: the count after its label ("2" folded; "2 · 1 session" open), then its
+/// latest ACTIVE, total CPU and total memory, under the table's columns.
+func groupCells(_ g: ServerGroup, open: Bool, now: Date) -> [String] {
+    let n = sessionCount(g.rows)
+    let count = open && n > 0 ? "\(g.rows.count) · \(n) session\(n == 1 ? "" : "s")" : "\(g.rows.count)"
+    return [count, activeText(g.rows.compactMap(\.lastActive).max(), now: now), cpuText(totalCPU(g.rows)), memText(g.rows.reduce(0) { $0 + $1.s.mem })]
 }
 
 /// Total CPU of the rows; nil while every row still waits for its second scan.
