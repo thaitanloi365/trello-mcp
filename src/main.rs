@@ -38,6 +38,18 @@ struct Cli {
 enum Command {
     /// Run the MCP server over stdio
     Serve,
+    /// Serve the dashboard: servers, Trello search, mentions waiting on you, list summaries
+    Dashboard {
+        /// local address (loopback only)
+        #[arg(long, default_value = dashboard::ADDR)]
+        addr: String,
+        /// loopback address `tailscale serve` points at (with --tailscale)
+        #[arg(long, default_value = dashboard::TAILNET_ADDR)]
+        tailnet_addr: String,
+        /// this Mac's tailnet host:port=owner login; only that login gets in
+        #[arg(long, default_value = "")]
+        tailscale: String,
+    },
     /// Create, edit, show, and validate persistent configuration
     Config {
         #[command(subcommand)]
@@ -181,6 +193,11 @@ fn run(
     let config_path = cli.config.unwrap_or_default();
     match cli.command {
         None | Some(Command::Serve) => serve(&config_path),
+        Some(Command::Dashboard {
+            addr,
+            tailnet_addr,
+            tailscale,
+        }) => run_dashboard(&config_path, &addr, &tailnet_addr, &tailscale),
         Some(Command::Version) => Ok(writeln!(stdout, "{}", version::CURRENT)?),
         Some(Command::Config { command }) => run_config(command, &config_path, stdout, stderr),
         Some(Command::ClientConfig { client, command }) => {
@@ -389,6 +406,19 @@ fn mask(value: &str) -> String {
     }
 }
 
+fn run_dashboard(
+    config_path: &str,
+    addr: &str,
+    tailnet_addr: &str,
+    tailscale: &str,
+) -> anyhow::Result<()> {
+    // One owner and a few requests a minute: a current-thread runtime, as `serve` uses.
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(dashboard::run(config_path, addr, tailnet_addr, tailscale))
+}
+
 fn serve(config_path: &str) -> anyhow::Result<()> {
     // One stdio client: a current-thread runtime is enough and saves a worker thread per core.
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -510,6 +540,16 @@ fn source_root(executable: &Path) -> anyhow::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dashboard_defaults_to_loopback_ports() {
+        let cli = Cli::try_parse_from(["trello-mcp", "dashboard"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Dashboard { ref addr, ref tailnet_addr, ref tailscale })
+                if addr == "127.0.0.1:8790" && tailnet_addr == "127.0.0.1:8791" && tailscale.is_empty()
+        ));
+    }
+
     use super::*;
 
     /// The code reads its home from `config::home_dir`, which tests pin to a
