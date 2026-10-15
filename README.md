@@ -263,9 +263,13 @@ from Dashboard (⌘D).
     make install          # the dashboard runs bin/trello-mcp: rebuild after pulling
     make tailnet          # open it to your own Tailscale login on https port 8448; reinstalls the tray
 
+A running dashboard keeps the old build until it restarts: quit and reopen the tray, or
+`pkill -f 'trello-mcp dashboard'` (the tray restarts it within a second).
+
 Only your Tailscale login gets in. `tailscale serve` points at a second loopback listener,
 127.0.0.1:8791, which checks the Host and `Tailscale-User-Login`. Never point `tailscale serve`
-at 8790: that listener trusts any request from this Mac.
+at 8790: that listener trusts any request from this Mac. To close tailnet access, run
+`tailscale serve --https=8448 off`, then `make tray-install TAILSCALE=`.
 
 ## Tools
 

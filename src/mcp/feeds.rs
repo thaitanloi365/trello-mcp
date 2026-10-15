@@ -321,7 +321,7 @@ impl Server {
             .call(
                 Method::GET,
                 "/members/me/notifications",
-                json!({"filter": "mentionedOnCard", "limit": 200, "memberCreator": true, "memberCreator_fields": "fullName"}),
+                json!({"filter": "mentionedOnCard", "limit": 1000, "memberCreator": true, "memberCreator_fields": "fullName"}),
                 None,
             )
             .await?;
@@ -330,6 +330,7 @@ impl Server {
             .call(
                 Method::GET,
                 "/members/me/actions",
+                // shortcut: one page of 1000 (Trello's max), page with `before=` if 30 days ever exceed it.
                 json!({"filter": "commentCard", "since": iso_date(now - WAITING_DAYS * 86_400), "limit": 1000, "fields": "date,data"}),
                 None,
             )
@@ -371,7 +372,7 @@ impl Server {
                 "/search",
                 json!({
                     "query": text, "modelTypes": "cards", "idBoards": ids.join(","),
-                    "cards_limit": 20, "partial": true, "card_fields": CARD_FIELDS,
+                    "cards_limit": 20, "partial": true, "card_fields": format!("{CARD_FIELDS},closed"),
                 }),
                 None,
             )
@@ -384,6 +385,10 @@ impl Server {
             .into_iter()
             .filter_map(|c| {
                 let c = Value::Object(c);
+                // Search also finds archived cards; the dashboard shows open ones only.
+                if c.get("closed").and_then(Value::as_bool) == Some(true) {
+                    return None;
+                }
                 by_board
                     .get(&nested_string(&c, &["idBoard"]))
                     .map(|b| card_view(&c, b, now))
@@ -639,7 +644,10 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn search_uses_the_snapshot_for_numbers_and_links() {
         let h = test_server(&[], |req| match req.url.path() {
-            "/search" => json_response(json!({"cards": [card("c1", 348, "Block physical address", "aaaa1111", "l1", 1.0)]})),
+            "/search" => json_response(json!({"cards": [
+                card("c1", 348, "Block physical address", "aaaa1111", "l1", 1.0),
+                json!({"idBoard": "b1", "idShort": 9, "name": "Old address", "closed": true})
+            ]})),
             _ => not_found(),
         })
         .await;
@@ -666,6 +674,7 @@ pub(crate) mod tests {
             "numbers, links and empty queries never call Trello"
         );
         let found = s.search_cards("address", &boards, now()).await.unwrap();
+        assert_eq!(found.len(), 1, "an archived hit is dropped");
         assert_eq!(
             (&found[0]["number"], &found[0]["list"]),
             (&json!(348), &json!("In Progress"))

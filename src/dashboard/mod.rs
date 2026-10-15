@@ -39,6 +39,9 @@ pub(crate) const ADDR: &str = "127.0.0.1:8790";
 pub(crate) const TAILNET_ADDR: &str = "127.0.0.1:8791";
 pub(crate) const PAGE: &[u8] = include_bytes!("../../web/index.html");
 const TRELLO_TTL: Duration = Duration::from_secs(60);
+// Search reuses a load this recent: a stale one costs a full serial reload, 6-40 s.
+const SEARCH_TTL: Duration = Duration::from_secs(600);
+const BOARDS_IN_FLIGHT: usize = 6;
 
 /// What the scans know; one scan at a time, under the lock.
 #[derive(Default)]
@@ -129,13 +132,11 @@ impl Dash {
         hdr(h, "x-trello-mcp") == "1" && (origin.is_empty() || self.origins.contains(&origin))
     }
 
-    /// The boards in scope (snapshots) and the page's Trello sections, from a 60 s cache.
-    async fn trello_view(&self, fresh: bool) -> (Arc<Vec<Value>>, Value) {
+    /// The boards in scope (snapshots) and the page's Trello sections; a cached load no older
+    /// than `max_age` is reused (`Duration::ZERO` always reloads).
+    async fn trello_view(&self, max_age: Duration) -> (Arc<Vec<Value>>, Value) {
         let mut cache = self.trello_view.lock().await;
-        if let Some(c) = cache
-            .as_ref()
-            .filter(|c| !fresh && c.at.elapsed() < TRELLO_TTL)
-        {
+        if let Some(c) = cache.as_ref().filter(|c| c.at.elapsed() < max_age) {
             return (c.boards.clone(), c.body.clone());
         }
         let (boards, body) = match &self.trello {
@@ -161,14 +162,30 @@ async fn load_trello(server: &mcp::Server) -> (Vec<Value>, Value) {
         Err(e) => return (Vec::new(), json!({"error": e.to_string()})),
     };
     let (mut boards, mut failed) = (Vec::new(), Vec::new());
-    for b in &scope {
-        let id = b.get("id").and_then(Value::as_str).unwrap_or_default();
-        match server.board_snapshot(id).await {
-            Ok(v) => boards.push(v),
-            Err(e) => failed.push(format!(
-                "{}: {e}",
-                b.get("name").and_then(Value::as_str).unwrap_or(id)
-            )),
+    // A few snapshots in flight overlap the network latency; the client's pacing still caps the rate.
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut todo = scope.iter();
+    loop {
+        while tasks.len() < BOARDS_IN_FLIGHT {
+            let Some(b) = todo.next() else { break };
+            let id = b
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let name = b
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or(&id)
+                .to_string();
+            let server = server.clone();
+            tasks.spawn(async move { (name, server.board_snapshot(&id).await) });
+        }
+        match tasks.join_next().await {
+            Some(Ok((_, Ok(v)))) => boards.push(v),
+            Some(Ok((name, Err(e)))) => failed.push(format!("{name}: {e}")),
+            Some(Err(e)) => failed.push(format!("board load: {e}")),
+            None => break,
         }
     }
     let lists_error = (!failed.is_empty()).then(|| {
@@ -189,10 +206,16 @@ async fn load_trello(server: &mcp::Server) -> (Vec<Value>, Value) {
         section(ListKind::ReadyForDev),
         section(ListKind::InProgress),
     );
-    let waiting = match server.waiting(&boards, now).await {
+    let mut waiting = match server.waiting(&boards, now).await {
         Ok(rows) => json!({"rows": rows}),
         Err(e) => json!({"rows": [], "error": e.to_string()}),
     };
+    // A failed board's mentions are missing from the rows: "nothing waiting" would be a false negative.
+    if let Some(e) = &lists_error
+        && waiting.get("error").is_none()
+    {
+        waiting["error"] = json!(e);
+    }
     let body = json!({"boards": boards.len(), "updatedAt": now, "waiting": waiting, "ready": ready, "progress": progress});
     (boards, body)
 }
@@ -382,15 +405,29 @@ async fn stop_server(
 
 async fn trello_now(
     State(dash): State<Arc<Dash>>,
+    h: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    json_ok(&dash.trello_view(q.contains_key("fresh")).await.1)
+    // Each load is ~58 Trello calls on a token shared with the MCP servers: only our page may ask.
+    if !dash.is_ours(&h) {
+        return http_error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let max_age = if q.contains_key("fresh") {
+        Duration::ZERO
+    } else {
+        TRELLO_TTL
+    };
+    json_ok(&dash.trello_view(max_age).await.1)
 }
 
 async fn search(
     State(dash): State<Arc<Dash>>,
+    h: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
+    if !dash.is_ours(&h) {
+        return http_error(StatusCode::FORBIDDEN, "forbidden");
+    }
     let q = q.get("q").map_or("", String::as_str);
     if let Err(e) = feeds::classify(q) {
         return http_error(StatusCode::BAD_REQUEST, &e.to_string());
@@ -399,7 +436,7 @@ async fn search(
         Ok(server) => server,
         Err(e) => return json_ok(&json!({"error": e})),
     };
-    let (boards, body) = dash.trello_view(false).await;
+    let (boards, body) = dash.trello_view(SEARCH_TTL).await;
     // A total failure must not read as "no matches".
     if let Some(e) = body.get("error") {
         return json_ok(&json!({"error": e}));
@@ -480,7 +517,7 @@ mod tests {
     }
 
     async fn get_json(to: &str, path: &str) -> Value {
-        let (_, raw) = call(to, "GET", path, &[("Host", to)]).await;
+        let (_, raw) = call(to, "GET", path, &[("Host", to), ("X-Trello-MCP", "1")]).await;
         serde_json::from_str(body(&raw)).unwrap_or_else(|e| panic!("{e}: {raw}"))
     }
 
@@ -630,7 +667,12 @@ mod tests {
             json!({"error": "read config: api_key is required"})
         );
         let long = format!("/api/search?q={}", "a".repeat(201));
-        assert_eq!(call(&us, "GET", &long, &[("Host", &us)]).await.0, 400);
+        assert_eq!(
+            call(&us, "GET", &long, &[("Host", &us), ("X-Trello-MCP", "1")])
+                .await
+                .0,
+            400
+        );
         assert_eq!(
             get_json(&us, "/api/search?q=x").await,
             json!({"error": "read config: api_key is required"})
@@ -662,7 +704,14 @@ mod tests {
             v["ready"]["error"].as_str().unwrap().contains("Gone Board"),
             "a failed board is named: {v}"
         );
-        assert_eq!(v["waiting"], json!({"rows": []}));
+        assert_eq!(v["waiting"]["rows"], json!([]));
+        assert!(
+            v["waiting"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("Gone Board"),
+            "a failed board is not a false 'nothing waiting': {v}"
+        );
         let n = calls(&h.api).await.len();
         get_json(&us, "/api/trello").await;
         assert_eq!(
@@ -672,8 +721,27 @@ mod tests {
         );
         get_json(&us, "/api/trello?fresh=1").await;
         assert!(calls(&h.api).await.len() > n, "Refresh refetches");
+        // Search reuses a load up to 10 minutes old, however stale for the page.
         let found = get_json(&us, "/api/search?q=%23348").await;
         assert_eq!(found["cards"][0]["name"], "Block physical address");
+        let loads = |c: Vec<String>| c.iter().filter(|c| c.contains("/boards")).count();
+        let n = loads(calls(&h.api).await);
+        get_json(&us, "/api/search?q=address").await;
+        assert_eq!(loads(calls(&h.api).await), n, "search made no board loads");
+    }
+
+    #[tokio::test]
+    async fn trello_routes_need_our_page() {
+        let h = test_server(&[], |_| not_found()).await;
+        let (us, _) = start(Ok(h.server.clone()), "").await;
+        for path in ["/api/trello", "/api/trello?fresh=1", "/api/search?q=x"] {
+            assert_eq!(
+                call(&us, "GET", path, &[("Host", &us)]).await.0,
+                403,
+                "{path}"
+            );
+        }
+        assert!(calls(&h.api).await.is_empty());
     }
 
     #[tokio::test]

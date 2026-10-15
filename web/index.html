@@ -172,7 +172,7 @@ $('theme').addEventListener('click', e => {
 applyTheme(store.get('theme'));
 
 async function getJSON(url) {
-  const r = await fetch(url, { cache: 'no-store' });
+  const r = await fetch(url, { cache: 'no-store', headers: { 'X-Trello-MCP': '1' } });
   if (!r.ok) throw new Error((await r.text()).trim() || `HTTP ${r.status}`);
   return r.json();
 }
@@ -241,7 +241,7 @@ function renderLists(id, section, name) {
   $(id).replaceChildren(...out);
 }
 
-let loadingTrello = false;
+let loadingTrello = false, lastTrello = 0;
 async function loadTrello(fresh) {
   if (loadingTrello) return;
   loadingTrello = true;
@@ -249,7 +249,8 @@ async function loadTrello(fresh) {
   try {
     const d = await getJSON('/api/trello' + (fresh ? '?fresh=1' : ''));
     if (d.error) throw new Error(d.error);
-    $('meta').textContent = `${plural(d.boards, 'board')} · updated ${new Date(d.updatedAt * 1000).toLocaleTimeString()}`;
+    lastTrello = Date.now();
+    $('meta').textContent = `${plural(d.boards, 'board')} · updated ${new Date(d.updatedAt * 1000).toLocaleTimeString([], { hour12: false })}`;
     renderWaiting(d.waiting);
     renderLists('ready', d.ready, 'Ready for dev');
     renderLists('progress', d.progress, 'In progress');
@@ -378,7 +379,7 @@ loadServers();
 loadTrello(false);
 setInterval(() => { if (!document.hidden) loadServers(); }, 2000);
 setInterval(() => { if (!document.hidden) loadTrello(false); }, 5 * 60 * 1000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { loadServers(); loadTrello(false); } });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { loadServers(); if (Date.now() - lastTrello >= 5 * 60 * 1000) loadTrello(false); } });
 </script>
 </body>
 </html>

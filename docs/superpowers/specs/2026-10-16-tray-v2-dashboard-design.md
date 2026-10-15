@@ -187,7 +187,7 @@ Every call goes through `self.client.call`, so it is paced and checked against t
 7. Rows are newest first.
 
 **Search** (`search_cards(q)`)
-- **Card URL or short link** (`trello.com/c/<shortLink>`, or a bare 8-character short link): `GET /cards/{shortLink}` with the same card fields plus `board=true` and `list=true`. The result must pass `ensure_board_allowed`.
+- **Card URL or short link** (`trello.com/c/<shortLink>`, or a bare 8-character short link): resolved from the board snapshot of open cards, with no extra Trello call (archived cards are not found). Only boards in scope are searched, so the board is always allowed.
 - **Card number** (`#123` or `123`): every card with that `idShort` in the board snapshot, which can be one per board.
 - **Text:** `GET /search` with `query=q`, `modelTypes=cards`, `idBoards=<ids in scope>`, `cards_limit=20`, `partial=true`, the same card fields, `card_board=true`, `board_fields=name`, `card_list=true` and `list_fields=name`.
 - An empty or whitespace query returns `{cards: []}` and makes no call. Queries longer than 200 characters are rejected with 400.

@@ -2,6 +2,8 @@
 //! processes are servers, CPU and activity across scans, grouping by session folder, and the
 //! strings the page shows. Pure; procs.rs reads the processes.
 
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
 use std::collections::{HashMap, HashSet};
 
 use serde_json::{Value, json};
