@@ -200,6 +200,29 @@ func cliPath(_ args: [String]) -> String {
     return ""
 }
 
+/// --tailscale host:port=login from the LaunchAgent; "" without one.
+func tailscaleArg(_ args: [String]) -> String {
+    if let i = args.firstIndex(of: "--tailscale"), i + 1 < args.count { return args[i + 1] }
+    return ""
+}
+
+/// The dashboard through `tailscale serve`: https://host:port; nil unless --tailscale is host:port=login.
+func tailnetURL(_ ts: String) -> URL? {
+    let parts = ts.components(separatedBy: "=")
+    guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+    return URL(string: "https://\(parts[0])")
+}
+
+/// `trello-mcp dashboard`'s arguments, with the tray's --tailscale.
+func dashboardArgs(_ ts: String) -> [String] { ["dashboard"] + (ts.isEmpty ? [] : ["--tailscale", ts]) }
+
+/// Seconds before restarting a dashboard that exited: 1, doubling to 60 while it keeps dying
+/// young, 1 again once it ran 5 minutes (a busy port or a bad build must not spin).
+func restartDelay(_ last: TimeInterval?, uptime: TimeInterval) -> TimeInterval {
+    guard let last, uptime < 300 else { return 1 }
+    return min(last * 2, 60)
+}
+
 /// `p` with symlinks resolved, as proc_pidpath reports binaries; `p` when it does not exist.
 /// realpath, not URL.resolvingSymlinksInPath, which drops a leading /private.
 func realPath(_ p: String) -> String {

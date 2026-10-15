@@ -23,9 +23,9 @@ func boardImage() -> NSImage {
 }
 
 #if SELFTEST
-// The fake server below is this binary copied as trello-mcp: copies of system binaries (arm64e) are killed on launch.
+// The fake server and dashboard below are this binary copied as trello-mcp: copies of system binaries (arm64e) are killed on launch.
 // It exits on its own after 30 s, so a run that fails midway leaves no server behind for long.
-if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "serve" { sleep(30); exit(0) }
+if CommandLine.arguments.count > 1, ["serve", "dashboard"].contains(CommandLine.arguments[1]) { sleep(30); exit(0) }
 
 // Which trello-mcp processes are servers.
 precondition(isServer(["/x/trello-mcp", "serve"]) && isServer(["/x/trello-mcp"]), "serve, no arguments")
@@ -45,6 +45,15 @@ precondition(parseProcArgs(withUnsafeBytes(of: Int32(1)) { Array($0) } + Array("
 // The CLI path from the LaunchAgent: none by default, so "installed" never matches.
 precondition(cliPath(["tray", "--cli", "/x/trello-mcp"]) == "/x/trello-mcp" && cliPath(["tray"]) == "" && cliPath(["tray", "--cli"]) == "", "--cli")
 precondition(realPath("/tmp") == "/private/tmp" && realPath("") == "" && realPath("/no/such/file") == "/no/such/file", "--cli resolves symlinks: \(realPath("/tmp"))")
+// The tailnet URL, the dashboard's arguments and its restart delay.
+precondition(tailscaleArg(["tray", "--cli", "/x", "--tailscale", "h.ts.net:8448=me@x.io"]) == "h.ts.net:8448=me@x.io"
+    && tailscaleArg(["tray"]) == "" && tailscaleArg(["tray", "--tailscale"]) == "", "--tailscale")
+precondition(tailnetURL("h.ts.net:8448=me@x.io") == URL(string: "https://h.ts.net:8448") && tailnetURL("") == nil && tailnetURL("h:1") == nil
+    && tailnetURL("=me@x") == nil && tailnetURL("h:1=") == nil, "tailnet URL")
+precondition(dashboardArgs("") == ["dashboard"] && dashboardArgs("h:1=me") == ["dashboard", "--tailscale", "h:1=me"], "dashboard args")
+precondition(restartDelay(nil, uptime: 0) == 1 && restartDelay(1, uptime: 2) == 2 && restartDelay(32, uptime: 2) == 60
+    && restartDelay(60, uptime: 2) == 60 && restartDelay(8, uptime: 300) == 1, "restart delay: 1 s, doubling to 60 s, 1 s again after 5 minutes up")
+precondition(!isServer(["trello-mcp", "dashboard", "--tailscale", "h:1=me"]), "the dashboard is not a server")
 
 // Servers: scans, activity, groups.
 let h = "/Users/me"
@@ -289,6 +298,27 @@ spinUntil { !tr.scanning }
 precondition(tr.scannedAt! > before7 && tr.minuteTimer?.isValid == true && tr.minuteTimer?.timeInterval == 60 && tr.minuteTimer?.tolerance == 15,
              "minute scans: one at once, then every 60 s with 15 s tolerance")
 tr.minuteTimer?.invalidate()
+// The dashboard child: the CLI's dashboard arguments, restarted 1 s after it dies, stopped by Quit and not restarted.
+tr.model.cli = fake.path
+tr.tailscale = "h.ts.net:8448=me@x.io"
+tr.startDashboard()
+let d1 = tr.dashboard
+precondition(d1 > 0, "the dashboard starts")
+spinUntil(2) { args(of: d1)?.count == 4 }
+precondition(args(of: d1) == [fake.path, "dashboard", "--tailscale", "h.ts.net:8448=me@x.io"], "dashboard args: \(String(describing: args(of: d1)))")
+scanNow()
+precondition(!tr.model.rows.contains { $0.id.pid == d1 }, "the dashboard is not listed as a server")
+kill(d1, SIGKILL)
+spinUntil(4) { tr.dashboard != 0 && tr.dashboard != d1 }
+let d2 = tr.dashboard
+precondition(d2 > 0 && d2 != d1 && tr.dashDelay == 1, "a dead dashboard is restarted after 1 s")
+var quitDone = false
+tr.stopDashboard { quitDone = true }
+spinUntil(3) { quitDone }
+precondition(quitDone && tr.dashboard == 0 && procName(d2) == nil, "Quit stops the dashboard")
+RunLoop.main.run(until: Date().addingTimeInterval(1.5))
+precondition(tr.dashboard == 0, "a stopped dashboard is not restarted")
+tr.model.cli = ""
 try? FileManager.default.removeItem(at: dir)
 
 // Menu bar icon and panel rendering.
@@ -430,6 +460,11 @@ final class Tray: NSObject, NSApplicationDelegate {
     var opening = false                     // the first scan of an open is in flight
     var clicks: Any?            // watches clicks in other apps while the panel shows
     var timer: Timer?           // the next scan, only while the panel shows
+    var tailscale = ""          // --tailscale host:port=login; "" without one
+    var dashboard: pid_t = 0    // the dashboard child; 0: not running
+    var dashWatch: DispatchSourceProcess?
+    var dashDelay: TimeInterval?    // the last restart delay
+    var quitting = false        // Quit is stopping the dashboard: no restart
     var minuteTimer: Timer?     // a scan a minute, panel open or not
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -440,15 +475,25 @@ final class Tray: NSObject, NSApplicationDelegate {
         item.button?.target = self
         item.button?.action = #selector(togglePanel)
         model.cli = realPath(cliPath(CommandLine.arguments))
+        tailscale = tailscaleArg(CommandLine.arguments)
+        model.tailnet = tailnetURL(tailscale)
+        model.onDashboard = { [unowned self] in closePanel(); NSWorkspace.shared.open($0) }
+        model.theme = Theme(rawValue: UserDefaults.standard.string(forKey: "theme") ?? "") ?? .auto
+        model.onTheme = { [unowned self] t in
+            UserDefaults.standard.set(t.rawValue, forKey: "theme")
+            window.appearance = t.appearance
+        }
         model.onStop = { [unowned self] in stopServer($0) }
         model.onLog = { [unowned self] in closePanel(); NSWorkspace.shared.open(logURL) }
-        model.onQuit = { exit(0) }      // exit 0: the LaunchAgent leaves it down until the next login
+        model.onQuit = { [unowned self] in stopDashboard { exit(0) } }     // exit 0: the LaunchAgent leaves it down until the next login
         window.contentViewController = panel
         window.level = .popUpMenu
         window.hasShadow = true
         window.hidesOnDeactivate = false
         window.isReleasedWhenClosed = false
         window.onClose = { [unowned self] in closePanel() }
+        window.appearance = model.theme.appearance
+        if !model.cli.isEmpty { startDashboard() }
         startMinuteScans()
     }
 
@@ -559,6 +604,73 @@ final class Tray: NSObject, NSApplicationDelegate {
         model.error = error
         NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
                              userInfo: [.announcement: error, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+    }
+
+    // MARK: Dashboard
+
+    /// Starts `<cli> dashboard`. posix_spawn, not Process: Process gives the child its own process
+    /// group, and launchd only reaps the job's group, so a kill -9'd tray would leave the dashboard
+    /// on :8790 (gws-mcp's tray runs its dashboard the same way). Its output lands in the tray's log.
+    func startDashboard() {
+        var pid: pid_t = 0
+        let argv: [UnsafeMutablePointer<CChar>?] = ([model.cli] + dashboardArgs(tailscale)).map { strdup($0) } + [nil]
+        defer { argv.forEach { free($0) } }
+        // Only fds 0-2 reach the dashboard: it lives long and must not hold any other descriptor open.
+        var attr: posix_spawnattr_t?
+        posix_spawnattr_init(&attr)
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        for fd: Int32 in 0...2 { posix_spawn_file_actions_addinherit_np(&actions, fd) }
+        defer {
+            posix_spawnattr_destroy(&attr)
+            posix_spawn_file_actions_destroy(&actions)
+        }
+        let rc = posix_spawn(&pid, model.cli, &actions, &attr, argv, environ)
+        guard rc == 0 else { return NSLog("trello-mcp dashboard failed to start: \(String(cString: strerror(rc)))") }
+        let started = Date()
+        let src = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
+        src.setEventHandler { [unowned self] in
+            var status: Int32 = 0
+            waitpid(pid, &status, 0)
+            dashboardExited(status: status, uptime: Date().timeIntervalSince(started))
+        }
+        src.resume()
+        dashWatch = src
+        dashboard = pid
+    }
+
+    /// A dashboard that exited on its own is started again after `restartDelay`.
+    func dashboardExited(status: Int32, uptime: TimeInterval) {
+        dashWatch?.cancel()
+        dashWatch = nil
+        dashboard = 0
+        guard !quitting else { return }
+        let delay = restartDelay(dashDelay, uptime: uptime)
+        dashDelay = delay
+        NSLog("trello-mcp dashboard exited (wait status \(status)), restarting in \(Int(delay)) s")
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [unowned self] in
+            if dashboard == 0 && !quitting { startDashboard() }
+        }
+    }
+
+    /// Quit: SIGTERM, SIGKILL after 5 s; `then` runs once the dashboard is gone, at once when none runs.
+    func stopDashboard(then: @escaping () -> Void) {
+        quitting = true
+        guard dashboard != 0, let src = dashWatch else { return then() }
+        let pid = dashboard
+        src.setEventHandler { [unowned self] in
+            var status: Int32 = 0
+            waitpid(pid, &status, 0)
+            src.cancel()
+            dashWatch = nil
+            dashboard = 0
+            then()
+        }
+        kill(pid, SIGTERM)
+        DispatchQueue.main.asyncAfter(deadline: .now() + stopGrace) { [unowned self] in
+            if dashboard == pid { kill(pid, SIGKILL) }
+        }
     }
 }
 
