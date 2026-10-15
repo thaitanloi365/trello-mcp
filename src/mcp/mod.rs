@@ -9,6 +9,7 @@ use crate::{config, trello, util};
 mod board;
 mod card;
 mod extras;
+pub(crate) mod feeds;
 mod handlers;
 mod server;
 #[cfg(test)]
