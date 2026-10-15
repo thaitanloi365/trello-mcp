@@ -231,7 +231,8 @@ folder of the Claude Code or Codex session that started it. Each row shows the P
 (`installed`, a worktree's name, or the binary's folders), the session's uptime, when the server
 last did work, CPU and memory (as Activity Monitor counts them). Quit stops a server: the first
 click arms a red Confirm for 3 s, the second sends SIGTERM, and SIGKILL follows after 5 s if the
-server lives on. The panel is the same layout as gws-mcp's tray.
+server lives on. Projects start folded: a folded row shows its server count, latest activity, CPU and memory; a
+click opens it. AUTO / LIGHT / DARK in the footer sets the panel's look (Auto follows macOS).
 
 It reads processes with libproc (no `ps`): every 2 s while its panel is open, and once a minute
 while it is closed (about 2 ms a scan), so ACTIVE shows when each server last did work. ACTIVE
@@ -245,6 +246,26 @@ Claude session has closed.
 running that binary show as `installed`.
 
 Log: `~/Library/Logs/trello-mcp-tray.log`. `make tray-test` runs its selftest.
+
+### Dashboard
+
+`trello-mcp dashboard` serves a page on http://127.0.0.1:8790 with:
+- the tray's server table;
+- Trello card search, by words, a card number or a card URL;
+- the @mentions from the last 30 days you haven't commented after, each with a Copy comment link
+  button;
+- the cards in every "Ready for dev" and "In progress" list on your boards in the allowed
+  workspaces.
+
+The tray starts it from this checkout's `bin/trello-mcp`, restarts it if it dies, and opens it
+from Dashboard (⌘D).
+
+    make install          # the dashboard runs bin/trello-mcp: rebuild after pulling
+    make tailnet          # open it to your own Tailscale login on https port 8448; reinstalls the tray
+
+Only your Tailscale login gets in. `tailscale serve` points at a second loopback listener,
+127.0.0.1:8791, which checks the Host and `Tailscale-User-Login`. Never point `tailscale serve`
+at 8790: that listener trusts any request from this Mac.
 
 ## Tools
 

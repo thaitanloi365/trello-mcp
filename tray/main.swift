@@ -1,5 +1,6 @@
 // trello-mcp-tray: a menu bar item whose panel lists the running trello-mcp servers with their
-// CPU and memory and can stop one. It scans with libproc off the main thread: once a minute so ACTIVE
+// CPU and memory and can stop one, and runs `trello-mcp dashboard` (the same list plus Trello views, in a browser).
+// It scans with libproc off the main thread: once a minute so ACTIVE
 // knows when each server last worked, and while the panel shows 0.5 s after opening, then every 2 s.
 // While the panel is closed nothing is drawn. `make tray-install`
 // starts it at login through ~/Library/LaunchAgents/com.trellomcp.tray.plist, which passes

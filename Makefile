@@ -5,6 +5,12 @@ APP         := Trello MCP.app
 AGENT       := com.trellomcp.tray
 AGENT_PLIST := $(HOME)/Library/LaunchAgents/$(AGENT).plist
 APP_DIR     := $(HOME)/Applications
+# make tailnet: this Mac's tailnet name and its owner's login (needs tailscale and jq), read only when used.
+TS_PORT   ?= 8448
+TS_HOST    = $(shell tailscale status --json 2>/dev/null | jq -r '.Self.DNSName | rtrimstr(".")')$(if $(filter 443,$(TS_PORT)),,:$(TS_PORT))
+TS_LOGIN   = $(shell tailscale status --json 2>/dev/null | jq -r '.User[(.Self.UserID|tostring)].LoginName // empty')
+# host:port=login for the tray's --tailscale; a reinstall keeps what the installed login item passes.
+TAILSCALE ?= $(if $(wildcard $(AGENT_PLIST)),$(shell /usr/libexec/PlistBuddy -c 'Print :ProgramArguments:4' '$(AGENT_PLIST)' 2>/dev/null))
 # Unload the login agent and wait until it has exited.
 stop-agent = launchctl bootout gui/$$(id -u)/$(AGENT) 2>/dev/null; while launchctl print gui/$$(id -u)/$(AGENT) >/dev/null 2>&1; do sleep 0.2; done
 SELFTEST    := $(or $(TMPDIR),/tmp)/$(TRAY)-selftest
@@ -14,7 +20,7 @@ SELFTEST    := $(or $(TMPDIR),/tmp)/$(TRAY)-selftest
 TEAM        ?= S36W2NCK97
 SIGN_ID     ?= $(or $(shell security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development: .*\)"$$/\1/p' | while read -r n; do security find-certificate -c "$$n" -p 2>/dev/null | openssl x509 -noout -subject 2>/dev/null | grep -q "OU=$(TEAM)" && { echo "$$n"; break; }; done),-)
 
-.PHONY: install build test lint fmt check release clean tray tray-test icon tray-install tray-uninstall
+.PHONY: install build test lint fmt check release clean tray tray-test icon tray-install tray-uninstall tailnet
 
 # Build and replace bin/trello-mcp. install(1) writes a new inode, so a
 # running server and macOS code signing stay intact.
@@ -62,7 +68,7 @@ tray: ## build dist/Trello MCP.app (macOS)
 	codesign --force -s "$(SIGN_ID)" "dist/$(APP)"
 
 tray-install: tray ## run the menu bar app now and at every login (macOS)
-	sed -e 's|@HOME@|$(HOME)|g' -e 's|@CLI@|$(CURDIR)/bin/trello-mcp|g' tray/$(AGENT).plist > $(AGENT).plist.tmp
+	sed -e 's|@HOME@|$(HOME)|g' -e 's|@CLI@|$(CURDIR)/bin/trello-mcp|g' -e 's|@TAILSCALE@|$(TAILSCALE)|g' tray/$(AGENT).plist > $(AGENT).plist.tmp
 	plutil -lint $(AGENT).plist.tmp
 	@$(stop-agent)
 	mkdir -p "$(APP_DIR)" "$(HOME)/Library/LaunchAgents"
@@ -74,6 +80,11 @@ tray-install: tray ## run the menu bar app now and at every login (macOS)
 tray-uninstall: ## stop the menu bar app and remove its login item and app
 	@$(stop-agent)
 	rm -rf "$(AGENT_PLIST)" "$(APP_DIR)/$(APP)"
+
+tailnet: ## open the dashboard to your own Tailscale login (https port 8448) and reinstall the tray with its link
+	@test -n "$(TS_LOGIN)" || { echo "tailnet: tailscale is not logged in (needs tailscale and jq)" >&2; exit 1; }
+	tailscale serve --bg --https=$(TS_PORT) http://127.0.0.1:8791
+	$(MAKE) tray-install TAILSCALE='$(TS_HOST)=$(TS_LOGIN)'
 
 icon: ## render tray/AppIcon.icns from tray/AppIcon.svg (needs rsvg-convert)
 	rm -rf dist/AppIcon.iconset && mkdir -p dist/AppIcon.iconset

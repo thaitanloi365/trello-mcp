@@ -14,8 +14,11 @@ All notable changes to this project are documented in this file.
   mode are kept. `$schema` is no longer added to an existing `opencode.json`. Codex TOML is
   checked before and after the edit and an unmanaged `mcp_servers.trello` is refused.
 - Trello MCP menu bar app (macOS): lists running servers grouped by session folder with PID, build,
-  uptime, last activity, CPU and memory, and quits one (Quit, then Confirm). Same layout as the
-  gws-mcp tray. `make tray-install`.
+  uptime, last activity, CPU and memory, and quits one (Quit, then Confirm). Compact Swiss panel;
+  projects start folded; AUTO / LIGHT / DARK theme. `make tray-install`.
+- `trello-mcp dashboard`: a local page (127.0.0.1:8790) with the server table, Trello card search,
+  the @mentions waiting on you (copy the comment link), and the cards in "Ready for dev" and
+  "In progress" lists. The tray runs it; `make tailnet` opens it to your own Tailscale login.
 - `serve` runs on a current-thread runtime: an idle server uses less memory and fewer threads.
 
 ## [2.0.0] - 2026-10-12
