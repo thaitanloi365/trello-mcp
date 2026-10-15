@@ -399,7 +399,11 @@ async fn search(
         Ok(server) => server,
         Err(e) => return json_ok(&json!({"error": e})),
     };
-    let (boards, _) = dash.trello_view(false).await;
+    let (boards, body) = dash.trello_view(false).await;
+    // A total failure must not read as "no matches".
+    if let Some(e) = body.get("error") {
+        return json_ok(&json!({"error": e}));
+    }
     match server.search_cards(q, &boards, now() as i64).await {
         Ok(cards) => json_ok(&json!({"cards": cards})),
         Err(e) => json_ok(&json!({"error": e.to_string()})),
@@ -670,6 +674,17 @@ mod tests {
         assert!(calls(&h.api).await.len() > n, "Refresh refetches");
         let found = get_json(&us, "/api/search?q=%23348").await;
         assert_eq!(found["cards"][0]["name"], "Block physical address");
+    }
+
+    #[tokio::test]
+    async fn search_reports_a_trello_failure() {
+        let h = test_server(&[], |_| {
+            wiremock::ResponseTemplate::new(401).set_body_string("invalid token")
+        })
+        .await;
+        let (us, _) = start(Ok(h.server.clone()), "").await;
+        let v = get_json(&us, "/api/search?q=%23348").await;
+        assert!(v["error"].is_string() && v.get("cards").is_none(), "{v}");
     }
 
     #[tokio::test]
