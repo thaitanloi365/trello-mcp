@@ -275,13 +275,9 @@ pub(crate) fn classify(q: &str) -> Result<Query, Error> {
     if !digits.is_empty() && digits.len() <= 7 && digits.bytes().all(|b| b.is_ascii_digit()) {
         return Ok(Query::Number(digits.parse().unwrap_or_default()));
     }
-    // Short links are 8 random letters and digits; a plain 8-letter word stays a word.
+    // Short links are 8 random letters and digits, any mix; a word of 8 letters falls back to search.
     let b = q.as_bytes();
-    if b.len() == 8
-        && b.iter().all(u8::is_ascii_alphanumeric)
-        && b.iter().any(u8::is_ascii_digit)
-        && b.iter().any(u8::is_ascii_alphabetic)
-    {
+    if b.len() == 8 && b.iter().all(u8::is_ascii_alphanumeric) {
         return Ok(Query::Link(q.to_string()));
     }
     Ok(Query::Text(q.to_string()))
@@ -595,8 +591,8 @@ pub(crate) mod tests {
         );
         assert!(matches!(classify("kfp0Te5b").unwrap(), Query::Link(l) if l == "kfp0Te5b"));
         assert!(
-            matches!(classify("invoices").unwrap(), Query::Text(t) if t == "invoices"),
-            "8 letters, no digit: words"
+            matches!(classify("invoices").unwrap(), Query::Link(l) if l == "invoices"),
+            "any bare 8-character token: a link first, words when no card has it"
         );
         assert!(matches!(classify("invoice pdf").unwrap(), Query::Text(t) if t == "invoice pdf"));
         assert!(classify(&"a".repeat(200)).is_ok() && classify(&"a".repeat(201)).is_err());
@@ -687,5 +683,14 @@ pub(crate) mod tests {
         // A bare 8-character short link that is no open card falls back to words.
         s.search_cards("abcd1234", &boards, now()).await.unwrap();
         assert_eq!(calls(&h.api).await.len(), 2);
+        // An all-letter short link resolves from the snapshot, with no Trello call.
+        let mut letters = board();
+        letters["cards"][0]["shortLink"] = json!("OXiBYZoj");
+        let hit = s.search_cards("OXiBYZoj", &[letters], now()).await.unwrap();
+        assert_eq!(hit[0]["number"], 348);
+        assert_eq!(calls(&h.api).await.len(), 2);
+        // A bare 8-letter word with no card behind it still reaches search.
+        s.search_cards("invoices", &boards, now()).await.unwrap();
+        assert_eq!(calls(&h.api).await.len(), 3);
     }
 }
