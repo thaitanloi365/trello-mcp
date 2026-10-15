@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+- `setup` now installs into the home directory by default (`--scope user`); `--scope project` is the
+  opt-in for project-local files. Earlier releases set up the project folder by default: pass
+  `--scope project` to keep that, and remove stale project entries if clients load trello twice.
+  `--project-dir` requires `--scope project`. User scope honors `$CODEX_HOME`, `$CLAUDE_CONFIG_DIR`
+  and `$XDG_CONFIG_HOME`.
+- JSON client configs, in both scopes, are patched in place: only the `trello` entry changes (your
+  own fields on it, such as `enabled`, stay) and comments, key order, line endings, BOM and file
+  mode are kept. `$schema` is no longer added to an existing `opencode.json`. Codex TOML is
+  checked before and after the edit and an unmanaged `mcp_servers.trello` is refused.
 - Trello MCP menu bar app (macOS): lists running servers grouped by session folder with PID, build,
   uptime, last activity, CPU and memory, and quits one (Quit, then Confirm). Same layout as the
   gws-mcp tray. `make tray-install`.

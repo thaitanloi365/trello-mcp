@@ -4,9 +4,12 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
+mod jsonpatch;
 pub mod project;
+pub mod user;
 
-pub use project::setup_project;
+pub use project::{project_setups, setup_project};
+pub use user::setup_user;
 
 const CODEX: &str = "codex";
 const CLAUDE_CODE: &str = "claude-code";

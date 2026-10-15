@@ -52,15 +52,15 @@ enum Command {
     /// Configure trello-mcp in an AI coding client
     Setup {
         client: Option<String>,
-        /// configure every project-scoped AI coding client
+        /// configure every supported AI coding client
         #[arg(long)]
         all: bool,
-        /// configuration scope (project)
-        #[arg(long, default_value = "project")]
+        /// configuration scope: user (home directory) or project
+        #[arg(long, default_value = "user")]
         scope: String,
-        /// project root to configure
-        #[arg(long, default_value = ".")]
-        project_dir: String,
+        /// project root to configure (with --scope project; default ".")
+        #[arg(long)]
+        project_dir: Option<String>,
         /// path clients should use to start trello-mcp
         #[arg(long)]
         command: Option<String>,
@@ -200,8 +200,11 @@ fn run(
             if all && client.is_some() {
                 bail!("--all cannot be combined with a client");
             }
-            if scope != "project" {
-                bail!("unsupported setup scope {scope:?} (choose project)");
+            if scope != "project" && scope != "user" {
+                bail!("unsupported setup scope {scope:?} (choose user or project)");
+            }
+            if scope == "user" && project_dir.is_some() {
+                bail!("--project-dir requires --scope project");
             }
             let clients: Vec<String> = match (all, client) {
                 (true, _) => clientconfig::PROJECT_CLIENTS
@@ -212,14 +215,50 @@ fn run(
                 (false, None) => bail!("setup requires a client or --all"),
             };
             let options = resolve_client_options(command.as_deref(), &config_path)?;
-            for client in clients {
-                let target = clientconfig::setup_project(&client, &project_dir, &options)?;
+            let mut written = Vec::new();
+            for client in &clients {
+                let target = if scope == "user" {
+                    clientconfig::setup_user(client, &options, &config::process_env())?
+                } else {
+                    let dir = project_dir.as_deref().unwrap_or(".");
+                    clientconfig::setup_project(client, dir, &options)?
+                };
                 writeln!(stdout, "{}", target.display())?;
+                written.push(target);
+            }
+            if scope == "user"
+                && let Some(note) = double_load_note(&clients, &written)
+            {
+                writeln!(stderr, "{note}")?;
             }
             Ok(())
         }
         Some(Command::Update { no_pull }) => update(no_pull, stdout),
     }
+}
+
+/// Warns when the current folder already has a project setup of trello-mcp for
+/// the clients just configured at user scope: they would load it twice.
+fn double_load_note(clients: &[String], written: &[std::path::PathBuf]) -> Option<String> {
+    let home = config::home_dir().ok()?;
+    note_for(std::path::Path::new("."), &home, written, clients)
+}
+
+fn note_for(
+    dir: &std::path::Path,
+    home: &std::path::Path,
+    written: &[std::path::PathBuf],
+    clients: &[String],
+) -> Option<String> {
+    let found = clientconfig::project_setups(dir, home, written, clients);
+    if found.is_empty() {
+        return None;
+    }
+    let files: Vec<String> = found.iter().map(|p| p.display().to_string()).collect();
+    Some(format!(
+        "note: this folder already has a project setup of trello-mcp ({}); AI clients here may load trello twice. Remove those project entries, or keep using --scope project.",
+        files.join(", ")
+    ))
 }
 
 fn run_config(
@@ -471,6 +510,12 @@ fn source_root(executable: &Path) -> anyhow::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The code reads its home from `config::home_dir`, which tests pin to a
+    /// temp dir: no env mutation, no way to reach the real home.
+    fn isolated_home() -> &'static std::path::Path {
+        config::test_home()
+    }
 
     fn run_ok(args: &[&str]) -> (String, String) {
         let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -822,5 +867,48 @@ mod tests {
         .collect();
         let got: Vec<&str> = out.split_whitespace().collect();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn setup_defaults_to_user_scope() {
+        let home = isolated_home();
+        let command = home.join("bin").join("trello-mcp");
+        let (out, _) = run_ok(&["setup", "opencode", "--command", command.to_str().unwrap()]);
+        let target = home.join(".config/opencode/opencode.json");
+        assert_eq!(out.trim(), target.to_str().unwrap());
+        assert!(
+            std::fs::read_to_string(&target)
+                .unwrap()
+                .contains("\"trello\"")
+        );
+    }
+
+    #[test]
+    fn setup_user_scope_rejects_project_dir() {
+        let err = run_err(&["setup", "codex", "--project-dir", "/tmp/x"]);
+        assert!(
+            err.contains("--project-dir requires --scope project"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn double_load_note_cases() {
+        let (project, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let clients = vec!["claude-code".to_string()];
+        assert!(note_for(project.path(), home.path(), &[], &clients).is_none());
+        std::fs::write(
+            project.path().join(".mcp.json"),
+            r#"{"mcpServers":{"trello":{"command":"/x/trello-mcp"}}}"#,
+        )
+        .unwrap();
+        let note = note_for(project.path(), home.path(), &[], &clients).unwrap();
+        assert!(
+            note.contains(".mcp.json") && note.contains("--scope project"),
+            "{note}"
+        );
+        // Not for a client this run did not configure, and quiet in home.
+        assert!(note_for(project.path(), home.path(), &[], &["codex".to_string()]).is_none());
+        assert!(note_for(project.path(), project.path(), &[], &clients).is_none());
     }
 }

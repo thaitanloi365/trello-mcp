@@ -106,36 +106,44 @@ binary that will be installed somewhere else. Generated configurations omit
 `~/.trello-mcp/config.json`. Pass `--config /path/to/config.json` only when the
 client should use a non-default config file.
 
-### Project-scoped setup
+### Setup into your AI clients
 
-From a project root, `setup --scope project` safely creates or merges the
-project-local MCP configuration while preserving unrelated settings and MCP
-servers:
+`trello-mcp setup` installs into your home directory by default (`--scope user`),
+so it works from any folder. It edits each client's config in place: it adds or
+replaces only the `trello` entry and keeps every other setting, server, comment,
+key order, and the file mode. It never overwrites a whole file.
 
 ```bash
-trello-mcp setup --all --scope project
+trello-mcp setup --all
 # or configure one client
-trello-mcp setup codex --scope project
-trello-mcp setup claude-code --scope project
-trello-mcp setup antigravity --scope project
-trello-mcp setup opencode --scope project
+trello-mcp setup codex
+trello-mcp setup claude-code
+trello-mcp setup antigravity
+trello-mcp setup opencode
 ```
 
-`--all` configures every client with project-scoped MCP support: Codex, Claude
-Code, Google Antigravity, and OpenCode.
+`--all` configures every client that supports this: Codex, Claude Code, Google
+Antigravity, and OpenCode. Add `--scope project` to write the project-local
+files instead; run it from the project root, or pass `--project-dir /path/to/project`.
 
-The target files are:
+| Client | User scope (default) | Project scope (`--scope project`) |
+| --- | --- | --- |
+| Codex | `~/.codex/config.toml` | `.codex/config.toml` |
+| Claude Code | `~/.claude.json` (`mcpServers.trello` only) | `.mcp.json` |
+| Google Antigravity | `~/.gemini/config/mcp_config.json` | `.agents/mcp_config.json` |
+| OpenCode | `~/.config/opencode/opencode.json` | `opencode.json` |
 
-| Client | Project configuration |
-| --- | --- |
-| Codex | `.codex/config.toml` |
-| Claude Code | `.mcp.json` |
-| Google Antigravity | `.agents/mcp_config.json` |
-| OpenCode | `opencode.json` |
+User scope follows relocated config homes: `$CODEX_HOME/config.toml`,
+`$CLAUDE_CONFIG_DIR/.claude.json` and `$XDG_CONFIG_HOME/opencode/opencode.json`.
+If the current folder already has a project setup of trello-mcp, `setup` prints
+a note that clients there may load trello twice; remove those project entries or
+keep using `--scope project`.
 
-Use `--project-dir /path/to/project` to configure another project. Claude
-Desktop does not provide an official project-scoped MCP configuration; use its
-desktop-level configuration described below.
+Upgrading: earlier releases set up the project folder by default. Pass
+`--scope project` to keep that behavior.
+
+Claude Desktop has no project-scoped MCP configuration and `setup` does not
+write its file; use `client-config claude-desktop` as described below.
 
 ### zsh shortcuts and no-rebuild development
 
@@ -154,10 +162,10 @@ Update with `trello-mcp update`: it runs `git pull --ff-only` in the source
 checkout and rebuilds `bin/trello-mcp` in place with `cargo build --release`.
 Use `--no-pull` to rebuild local changes only. Restart MCP clients afterwards to load the new binary.
 
-Reload zsh with `source ~/.zshrc`. For a no-rebuild project integration, run:
+Reload zsh with `source ~/.zshrc`. For a no-rebuild integration, run:
 
 ```bash
-trello-mcp-dev setup opencode --scope project \
+trello-mcp-dev setup opencode \
   --command /absolute/path/to/trello-mcp/scripts/trello-mcp-dev
 ```
 

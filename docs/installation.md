@@ -154,11 +154,12 @@ Command-line arguments can be stored in shell history. Use
 concern. The persisted configuration is stored at
 `~/.trello-mcp/config.json` with mode `0600`.
 
-Generate or install project-scoped MCP client configuration:
+Generate MCP client configuration, or install it into your home-directory client
+configs (use `--scope project` for project-local files):
 
 ```bash
 trello-mcp client-config codex
-trello-mcp setup --all --scope project
+trello-mcp setup --all
 ```
 
 See the main [README](../README.md#connect-ai-coding-clients) for individual

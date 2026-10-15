@@ -67,8 +67,15 @@ impl Default for Config {
 
 pub type Env = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
+#[cfg(not(test))]
 pub fn process_env() -> Env {
     Arc::new(|name| std::env::var(name).ok())
+}
+
+/// Tests never read the real environment (CODEX_HOME and friends).
+#[cfg(test)]
+pub fn process_env() -> Env {
+    no_env()
 }
 
 #[cfg(test)]
@@ -76,7 +83,21 @@ pub fn no_env() -> Env {
     Arc::new(|_| None)
 }
 
-fn home_dir() -> Result<PathBuf, Error> {
+/// Tests never see the real home: they get one shared temp dir instead.
+#[cfg(test)]
+pub(crate) fn test_home() -> &'static Path {
+    static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| tempfile::tempdir().unwrap().keep())
+        .as_path()
+}
+
+#[cfg(test)]
+pub(crate) fn home_dir() -> Result<PathBuf, Error> {
+    Ok(test_home().to_path_buf())
+}
+
+#[cfg(not(test))]
+pub(crate) fn home_dir() -> Result<PathBuf, Error> {
     dirs::home_dir().ok_or_else(|| {
         Error::Invalid(
             "resolve home directory: neither $HOME nor a user profile is available".into(),
