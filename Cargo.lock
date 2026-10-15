@@ -1927,6 +1927,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "dirs",
+ "libc",
  "reqwest",
  "rmcp",
  "serde",
