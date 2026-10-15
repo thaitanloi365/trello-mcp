@@ -1,1 +1,384 @@
-<!doctype html><meta charset="utf-8"><title>Trello MCP</title><p>Trello MCP dashboard</p>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trello MCP</title>
+<style>
+/* claude-usage's Swiss sheet: one grotesque, ink on paper, rules not boxes; Swiss red only for the action the page asks for and for alarms. */
+:root { color-scheme: light dark; --paper:#fff; --ink:#111; --muted:#5c5c5c; --hair:#d4d4d4; --red:#da291c; --red-ink:#da291c; --on-red:#fff; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme=light]) { color-scheme: dark; --paper:#0d0d0d; --ink:#f2f2f2; --muted:#a3a3a3; --hair:#333; --red-ink:#ff6a5c; } }
+:root[data-theme=dark] { color-scheme: dark; --paper:#0d0d0d; --ink:#f2f2f2; --muted:#a3a3a3; --hair:#333; --red-ink:#ff6a5c; }
+:root[data-theme=light] { color-scheme: light; }
+* { box-sizing: border-box; }
+html { scrollbar-color: var(--ink) var(--paper); }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.4 "Helvetica Neue", Helvetica, Arial, sans-serif; font-variant-numeric: tabular-nums; -webkit-text-size-adjust: 100%; }
+main { max-width: 1240px; margin: 0 auto; padding: 32px 24px 64px; }
+::selection { background: var(--red); color: var(--on-red); }
+:focus-visible { outline: 2px solid var(--red-ink); outline-offset: 2px; }
+h1, h2 { margin: 0; font-weight: 700; letter-spacing: -.02em; }
+a { color: inherit; }
+.mark { display: inline-flex; gap: 4.5px; align-items: flex-start; }
+.mark i { width: 9px; background: currentColor; }
+
+/* Masthead: name flush left, state and tools flush right, closed by a heavy rule. */
+.mast { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 24px; padding-bottom: 16px; border-bottom: 4px solid var(--ink); }
+h1 { display: flex; align-items: center; gap: 14px; font-size: 40px; line-height: 1; }
+.tools { margin-left: auto; display: flex; align-items: center; flex-wrap: wrap; gap: 12px 16px; }
+.meta { color: var(--muted); font-size: 13px; }
+
+/* Buttons: square, ink outline; red only for the page's one action. */
+.btn { display: inline-flex; align-items: center; justify-content: center; min-height: 32px; padding: 4px 12px; font: inherit; font-size: 13px; font-weight: 700; color: var(--ink); background: transparent; border: 2px solid var(--ink); border-radius: 0; cursor: pointer; white-space: nowrap; text-decoration: none; }
+@media (hover: hover) { .btn:hover:not(:disabled) { background: var(--ink); color: var(--paper); } }
+.btn.primary { background: var(--red); border-color: var(--red); color: var(--on-red); }
+@media (hover: hover) { .btn.primary:hover:not(:disabled) { background: var(--ink); border-color: var(--ink); color: var(--paper); } }
+.btn.sm { min-height: 26px; padding: 1px 8px; font-size: 12px; border-width: 1.5px; }
+.btn.done { background: var(--ink); color: var(--paper); }
+.btn:disabled { opacity: .4; cursor: default; }
+@media (pointer: coarse) { .btn { min-height: 44px; } .btn.sm { min-height: 36px; } }
+.seg { display: flex; }
+.seg button { font: inherit; font-size: 11px; font-weight: 700; letter-spacing: .06em; padding: 4px 8px 3px; border: 1px solid var(--ink); margin-left: -1px; border-radius: 0; background: transparent; color: var(--ink); cursor: pointer; }
+.seg button[aria-pressed=true] { background: var(--ink); color: var(--paper); }
+.label { font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+
+.search { margin-top: 28px; }
+.box { display: flex; margin-top: 6px; }
+.box input { flex: 1; min-width: 0; height: 48px; padding: 0 14px; font: inherit; font-size: 17px; color: var(--ink); background: var(--paper); border: 2px solid var(--ink); border-right: 0; border-radius: 0; }
+.box .btn { min-height: 48px; padding: 0 18px; }
+
+.sec { display: flex; align-items: baseline; gap: 12px; margin-top: 44px; padding-bottom: 10px; border-bottom: 4px solid var(--ink); font-size: 22px; }
+.sec .n.red { color: var(--red-ink); }
+.sec .aside { margin-left: auto; font-size: 13px; font-weight: 400; color: var(--muted); letter-spacing: 0; }
+.err { margin-top: 12px; padding: 10px 14px; border: 2px solid var(--red-ink); color: var(--red-ink); font-weight: 700; overflow-wrap: anywhere; }
+.empty { margin: 0; padding: 16px 0; color: var(--muted); border-bottom: 1px solid var(--hair); }
+.small { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.no { color: var(--muted); font-weight: 400; }
+
+/* Waiting on you: card, the mention, the actions. */
+.wait { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.5fr) auto; gap: 8px 24px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--ink); }
+.wait .t { font-size: 17px; font-weight: 700; line-height: 1.25; overflow-wrap: anywhere; }
+.wait .t a { text-decoration: none; }
+@media (hover: hover) { .wait .t a:hover { text-decoration: underline; } }
+.quote { margin: 0; font-size: 14px; border-left: 3px solid var(--ink); padding-left: 10px; overflow-wrap: anywhere; }
+.quote .small { display: block; margin-top: 2px; }
+.acts { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+
+/* Ready for dev | In progress. */
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 40px; }
+.board { margin-top: 14px; display: flex; gap: 8px; align-items: baseline; padding-bottom: 4px; border-bottom: 1px solid var(--ink); font-size: 13px; font-weight: 700; }
+.board a { text-decoration: none; }
+.board span { color: var(--muted); font-weight: 400; }
+.tk { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--hair); font-size: 14px; }
+.tk .no { text-align: right; font-size: 13px; }
+.tk .tt { min-width: 0; }
+.tk .tt a { display: block; font-weight: 700; text-decoration: none; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+@media (hover: hover) { .tk .tt a:hover { text-decoration: underline; } }
+.tk .small { display: block; }
+
+/* Servers: big figures, then the folding table. */
+.figs { display: flex; flex-wrap: wrap; gap: 16px 40px; margin: 16px 0 14px; }
+.figs b { display: block; font-size: 34px; line-height: 1; letter-spacing: -.02em; margin-top: 4px; }
+.sg { display: grid; grid-template-columns: 56px minmax(0, 1fr) 64px 76px 60px 70px 92px; gap: 10px; align-items: center; font-size: 14px; }
+.sg .r { text-align: right; }
+.sg.th { padding-bottom: 6px; border-bottom: 1px solid var(--ink); }
+button.sg { width: 100%; min-height: 40px; padding: 0; font: inherit; font-size: 14px; color: inherit; background: transparent; border: 0; border-bottom: 1px solid var(--hair); border-radius: 0; text-align: left; cursor: pointer; }
+@media (hover: hover) { button.sg:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); } }
+.sg .lab { grid-column: 1 / 4; display: flex; gap: 8px; align-items: center; min-width: 0; font-weight: 700; }
+.sg .lab .t { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sg .lab .n { color: var(--muted); font-weight: 400; font-size: 13px; white-space: nowrap; }
+.chev { width: 12px; flex: none; font-size: 10px; color: var(--muted); }
+.sg.srv { min-height: 38px; border-bottom: 1px solid var(--hair); }
+.sg .b { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.bold { font-weight: 700; }
+
+@media (max-width: 860px) {
+  main { padding: 20px 16px 48px; }
+  h1 { font-size: 30px; }
+  .cols, .wait { grid-template-columns: 1fr; }
+  .acts { justify-content: flex-start; }
+  .sg { grid-template-columns: 48px minmax(0, 1fr) 56px 50px 84px; }
+  .sg .up, .sg .cpu { display: none; }
+  .sg .lab { grid-column: 1 / 3; }
+  .figs b { font-size: 26px; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header class="mast">
+    <h1><span class="mark" aria-hidden="true"><i style="height:36px"></i><i style="height:23px"></i><i style="height:29px"></i></span>Trello MCP</h1>
+    <div class="tools">
+      <span class="meta" id="meta">Loading…</span>
+      <button class="btn" id="refresh" type="button">Refresh</button>
+      <div class="seg" id="theme" role="group" aria-label="Theme">
+        <button type="button" data-t="auto">AUTO</button><button type="button" data-t="light">LIGHT</button><button type="button" data-t="dark">DARK</button>
+      </div>
+    </div>
+  </header>
+
+  <section class="search">
+    <label class="label" for="q">Search cards: words, a card number, or a card URL</label>
+    <form class="box" id="search"><input id="q" type="search" autocomplete="off" placeholder="Search cards"><button class="btn" type="submit">Search</button></form>
+    <div id="results" aria-live="polite"></div>
+  </section>
+
+  <h2 class="sec">Waiting on you <span class="n" id="waiting-n"></span><span class="aside">@mentions from the last 30 days you haven't commented after</span></h2>
+  <div id="waiting"></div>
+
+  <div class="cols">
+    <div><h2 class="sec">Ready for dev <span class="n" id="ready-n"></span></h2><div id="ready"></div></div>
+    <div><h2 class="sec">In progress <span class="n" id="progress-n"></span></h2><div id="progress"></div></div>
+  </div>
+
+  <h2 class="sec">Servers <span class="aside">live · every 2 s</span></h2>
+  <div id="servers"></div>
+</main>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+/** An element with a class and text: Trello text is only ever set as text. */
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+// Links only ever point at Trello.
+const trelloURL = u => /^https:\/\/trello\.com\//.test(u || '') ? u : null;
+function link(cls, text, url) {
+  const a = el('a', cls, text);
+  const u = trelloURL(url);
+  if (u) { a.href = u; a.target = '_blank'; a.rel = 'noopener'; }
+  return a;
+}
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+};
+function errorBox(text) { const e = el('div', 'err', text); e.setAttribute('role', 'alert'); return e; }
+const join = (...parts) => parts.filter(Boolean).join(' · ');
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+// Theme: AUTO follows the system; the choice stays in this browser.
+function applyTheme(t) {
+  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  else { delete document.documentElement.dataset.theme; t = 'auto'; }
+  for (const b of $('theme').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.t === t));
+}
+$('theme').addEventListener('click', e => {
+  const t = e.target.closest('button')?.dataset.t;
+  if (t) { store.set('theme', t); applyTheme(t); }
+});
+applyTheme(store.get('theme'));
+
+async function getJSON(url) {
+  const r = await fetch(url, { cache: 'no-store' });
+  if (!r.ok) throw new Error((await r.text()).trim() || `HTTP ${r.status}`);
+  return r.json();
+}
+
+async function copy(btn, text) {
+  const was = btn.textContent;
+  try { await navigator.clipboard.writeText(text); btn.textContent = 'Copied'; }
+  catch { btn.textContent = 'Copy failed'; }
+  btn.classList.add('done');
+  setTimeout(() => { btn.textContent = was; btn.classList.remove('done'); }, 1200);
+}
+function copyBtn(label, text, primary) {
+  const b = el('button', 'btn sm' + (primary ? ' primary' : ''), label);
+  b.type = 'button';
+  b.addEventListener('click', () => copy(b, text));
+  return b;
+}
+
+// Cards.
+const members = c => c.members.length ? c.members.join(', ') : 'no members';
+const activity = c => c.activity ? 'active ' + c.activity : '';
+const number = c => c.number != null ? '#' + c.number : '';
+function cardRow(c, detail, actions) {
+  const row = el('div', 'tk');
+  const tt = el('span', 'tt');
+  tt.append(link('', c.name, c.url), el('span', 'small', detail));
+  const acts = el('span', 'acts');
+  acts.append(...actions);
+  row.append(el('span', 'no', number(c)), tt, acts);
+  return row;
+}
+
+function renderWaiting(w) {
+  const rows = w.rows || [];
+  $('waiting-n').textContent = rows.length || '';
+  $('waiting-n').classList.toggle('red', rows.length > 0);
+  const out = w.error ? [errorBox(w.error)] : [];
+  if (!rows.length && !w.error) out.push(el('p', 'empty', 'Nothing waiting on you.'));
+  for (const c of rows) {
+    const row = el('div', 'wait');
+    const card = el('div');
+    const t = el('div', 't');
+    t.append(el('span', 'no', number(c) + ' '), link('', c.name, c.url));
+    card.append(t, el('div', 'small', join(c.board, c.list)));
+    const quote = el('blockquote', 'quote', c.mention);
+    quote.append(el('span', 'small', join(c.by, c.age, c.earlier ? `+${plural(c.earlier, 'earlier mention')}` : '')));
+    const acts = el('div', 'acts');
+    acts.append(copyBtn('Copy comment link', c.commentUrl, true), link('btn sm', 'Open', c.url));
+    row.append(card, quote, acts);
+    out.push(row);
+  }
+  $('waiting').replaceChildren(...out);
+}
+
+function renderLists(id, section, name) {
+  const boards = section.boards || [];
+  $(id + '-n').textContent = boards.reduce((n, b) => n + b.cards.length, 0) || '';
+  const out = section.error ? [errorBox(section.error)] : [];
+  if (!boards.length) out.push(el('p', 'empty', `No cards in ${name} lists.`));
+  for (const b of boards) {
+    const head = el('div', 'board');
+    head.append(link('', b.board, b.url), el('span', '', String(b.cards.length)));
+    out.push(head);
+    for (const c of b.cards) out.push(cardRow(c, join(members(c), activity(c)), [copyBtn('Copy', c.url)]));
+  }
+  $(id).replaceChildren(...out);
+}
+
+let loadingTrello = false;
+async function loadTrello(fresh) {
+  if (loadingTrello) return;
+  loadingTrello = true;
+  $('refresh').disabled = true;
+  try {
+    const d = await getJSON('/api/trello' + (fresh ? '?fresh=1' : ''));
+    if (d.error) throw new Error(d.error);
+    $('meta').textContent = `${plural(d.boards, 'board')} · updated ${new Date(d.updatedAt * 1000).toLocaleTimeString()}`;
+    renderWaiting(d.waiting);
+    renderLists('ready', d.ready, 'Ready for dev');
+    renderLists('progress', d.progress, 'In progress');
+  } catch (e) {
+    $('meta').textContent = 'Trello unavailable';
+    for (const id of ['waiting', 'ready', 'progress']) { $(id).replaceChildren(errorBox(e.message)); $(id + '-n').textContent = ''; }
+  } finally {
+    loadingTrello = false;
+    $('refresh').disabled = false;
+  }
+}
+$('refresh').addEventListener('click', () => loadTrello(true));
+
+// Search: 300 ms after typing stops, at once on Enter; only the latest answer shows.
+let searchTimer, searchSeq = 0;
+async function search() {
+  const q = $('q').value.trim();
+  const seq = ++searchSeq;
+  if (!q) { $('results').replaceChildren(); return; }
+  try {
+    const d = await getJSON('/api/search?q=' + encodeURIComponent(q));
+    if (seq !== searchSeq) return;
+    if (d.error) throw new Error(d.error);
+    $('results').replaceChildren(...(d.cards.length
+      ? d.cards.map(c => cardRow(c, join(c.board, c.list, members(c), activity(c)), [copyBtn('Copy link', c.url), link('btn sm', 'Open', c.url)]))
+      : [el('p', 'empty', 'No cards found.')]));
+  } catch (e) {
+    if (seq === searchSeq) $('results').replaceChildren(errorBox(e.message));
+  }
+}
+$('q').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(search, 300); });
+$('search').addEventListener('submit', e => { e.preventDefault(); clearTimeout(searchTimer); search(); });
+
+// Servers: folded by default; open groups are remembered in this browser.
+let open = new Set();
+try { open = new Set(JSON.parse(store.get('open-groups') || '[]')); } catch {}
+let last = null, confirming = null, confirmTimer = null, serversError = '';
+
+function serverRow(r) {
+  const key = `${r.pid}-${r.start}`;
+  const row = el('div', 'sg srv');
+  for (const [cls, v] of [['r bold', r.pid], ['b', r.build], ['r up', r.up], ['r', r.active], ['r cpu', r.cpu], ['r bold', r.mem]]) row.append(el('span', cls, String(v)));
+  row.children[1].title = r.path;
+  const armed = confirming === key && !r.stopping;
+  const b = el('button', 'btn sm' + (armed ? ' primary' : ''), r.stopping ? 'Quitting…' : armed ? 'Confirm' : 'Quit');
+  b.type = 'button';
+  b.dataset.key = 'quit-' + key;
+  b.disabled = r.stopping;
+  b.setAttribute('aria-label', `${armed ? 'Confirm quit of' : 'Quit'} trello-mcp server ${r.pid}`);
+  b.addEventListener('click', () => quit(r, key));
+  row.append(b);
+  return row;
+}
+
+// The first click arms a red Confirm for 3 s; the second stops the server.
+async function quit(r, key) {
+  if (confirming !== key) {
+    confirming = key;
+    clearTimeout(confirmTimer);
+    confirmTimer = setTimeout(() => { if (confirming === key) { confirming = null; if (last) renderServers(last); } }, 3000);
+    if (last) renderServers(last);
+    return;
+  }
+  confirming = null;
+  clearTimeout(confirmTimer);
+  serversError = '';
+  try {
+    const res = await fetch(`/api/servers/${r.pid}/${r.start}/stop`, { method: 'POST', headers: { 'X-Trello-MCP': '1' } });
+    if (!res.ok && res.status !== 404) serversError = (await res.text()).trim();
+  } catch (e) { serversError = e.message; }
+  loadServers();
+}
+
+function groupHead(g) {
+  const isOpen = open.has(g.label);
+  const head = el('button', 'sg');
+  head.type = 'button';
+  head.dataset.key = 'group-' + g.label;
+  head.setAttribute('aria-expanded', String(isOpen));
+  const lab = el('span', 'lab');
+  const count = plural(g.count, 'server') + (g.sessions ? ' · ' + plural(g.sessions, 'session') : '');
+  lab.append(el('span', 'chev', isOpen ? '▼' : '▶'), el('span', 't', g.label), el('span', 'n', count));
+  head.append(lab, el('span', 'r', g.active), el('span', 'r cpu', g.cpu), el('span', 'r bold', g.mem), el('span'));
+  head.addEventListener('click', () => {
+    if (open.has(g.label)) open.delete(g.label); else open.add(g.label);
+    store.set('open-groups', JSON.stringify([...open]));
+    renderServers(last);
+  });
+  return head;
+}
+
+function renderServers(d) {
+  const box = $('servers');
+  if (d.unsupported) { box.replaceChildren(el('p', 'empty', 'The server list is available on macOS only.')); return; }
+  const focused = document.activeElement?.dataset?.key;
+  const out = serversError ? [errorBox(serversError)] : [];
+  const figs = el('div', 'figs');
+  for (const [name, v] of [['Servers', d.figures.servers], ['Sessions', d.figures.sessions], ['Memory', d.figures.memory], ['CPU', d.figures.cpu]]) {
+    const f = el('div');
+    f.append(el('div', 'label', name), el('b', '', v));
+    figs.append(f);
+  }
+  out.push(figs);
+  if (!d.groups.length) {
+    out.push(el('p', 'empty', 'No servers running. Claude Code and Codex start one trello-mcp per session.'));
+  } else {
+    const th = el('div', 'sg th label');
+    for (const [cls, v] of [['r', 'PID'], ['', 'Build'], ['r up', 'Up'], ['r', 'Active'], ['r cpu', 'CPU'], ['r', 'Mem'], ['', '']]) th.append(el('span', cls, v));
+    out.push(th);
+    for (const g of d.groups) {
+      out.push(groupHead(g));
+      if (open.has(g.label)) for (const r of g.rows) out.push(serverRow(r));
+    }
+  }
+  box.replaceChildren(...out);
+  // A re-render every 2 s must not take the keyboard focus away.
+  if (focused) box.querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus();
+}
+
+async function loadServers() {
+  try { last = await getJSON('/api/servers'); renderServers(last); }
+  catch (e) { $('servers').replaceChildren(errorBox(e.message)); }
+}
+
+loadServers();
+loadTrello(false);
+setInterval(() => { if (!document.hidden) loadServers(); }, 2000);
+setInterval(() => { if (!document.hidden) loadTrello(false); }, 5 * 60 * 1000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { loadServers(); loadTrello(false); } });
+</script>
+</body>
+</html>

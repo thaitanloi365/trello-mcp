@@ -694,4 +694,30 @@ mod tests {
         let err = run("", &addr, TAILNET_ADDR, "").await.unwrap_err();
         assert!(format!("{err:#}").contains("already running"), "{err:#}");
     }
+
+    #[test]
+    fn page_never_injects_html() {
+        let page = std::str::from_utf8(PAGE).unwrap();
+        for sink in [
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+        ] {
+            assert!(
+                !page.contains(sink),
+                "{sink}: Trello text must only ever be set as text"
+            );
+        }
+        for wired in [
+            "/api/servers",
+            "/api/trello",
+            "/api/search",
+            "X-Trello-MCP",
+            "open-groups",
+            "localStorage",
+        ] {
+            assert!(page.contains(wired), "{wired}");
+        }
+    }
 }
