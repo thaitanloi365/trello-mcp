@@ -251,9 +251,9 @@ final class Press: NSButton {
 
 /// A text-only button (the design's .txt): red ink while hot.
 func txtBtn(_ p: Pal, _ title: String, _ w: W, size: CGFloat = 13, minHeight: CGFloat = 36, color: NSColor? = nil,
-            pad: (CGFloat, CGFloat), key: String = "", _ act: @escaping () -> Void) -> Press {
+            pad: (CGFloat, CGFloat), key: String = "", hint: String? = nil, _ act: @escaping () -> Void) -> Press {
     let l = label(title, size, w, color ?? p.ink)
-    let b = Press(l, pad: pad, minHeight: minHeight, act)
+    let b = Press(hint.map { hstack([l, label($0, 10, p.muted)], 3) } ?? l, pad: pad, minHeight: minHeight, act)
     b.paint = { _, hot in recolor(l, hot ? p.redInk : color ?? p.ink) }
     b.keyEquivalent = key
     b.keyEquivalentModifierMask = .command
@@ -406,7 +406,7 @@ final class PanelController: NSViewController {
     func footer() -> NSView {
         var links: [NSView] = []
         if !m.cli.isEmpty {     // without --cli the tray starts no dashboard
-            links.append(txtBtn(p, "Dashboard", .b, size: 12.5, minHeight: 30, pad: (0, 8), key: "d") { [unowned self] in m.onDashboard(dashboardURL) })
+            links.append(txtBtn(p, "Dashboard", .b, size: 12.5, minHeight: 30, pad: (0, 8), key: "d", hint: "⌘D") { [unowned self] in m.onDashboard(dashboardURL) })
             if let u = m.tailnet {
                 links.append(txtBtn(p, "via Tailscale", .b, size: 12.5, minHeight: 30, pad: (8, 8)) { [unowned self] in m.onDashboard(u) })
             }
@@ -415,8 +415,8 @@ final class PanelController: NSViewController {
         let s = label(m.stats.isEmpty ? "Tray: —" : m.stats, 11, p.muted)
         statsRef = s
         let tools = hstack([s, spacer(),
-                            txtBtn(p, "Open Log", .r, size: 11, minHeight: 24, pad: (8, 8), key: "l") { [unowned self] in m.onLog() },
-                            txtBtn(p, "Quit", .r, size: 11, minHeight: 24, pad: (8, 0), key: "q") { [unowned self] in m.onQuit() }], 0)
+                            txtBtn(p, "Open Log", .r, size: 11, minHeight: 24, pad: (8, 8), key: "l", hint: "⌘L") { [unowned self] in m.onLog() },
+                            txtBtn(p, "Quit", .r, size: 11, minHeight: 24, pad: (8, 0), key: "q", hint: "⌘Q") { [unowned self] in m.onQuit() }], 0)
         return vstack([block(p.ink, h: 1), hstack(links + [spacer(), themes], 4), tools], 2)
     }
 
