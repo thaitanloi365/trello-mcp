@@ -19,7 +19,7 @@
   - light: paper `#fff`, ink `#111`, muted `#5c5c5c`, hair `#d4d4d4`, red `#da291c`, red-ink `#da291c`;
   - dark: paper `#0d0d0d`, ink `#f2f2f2`, muted `#a3a3a3`, hair `#333`, red-ink `#ff6a5c`;
   - Helvetica Neue, tabular numerals, square corners. Swiss red only for the action the page asks for (Confirm, Copy comment link) and alarms.
-- Tray: panel 460 pt wide. Server rows 26 pt, group rows 28 pt, figures 17 pt. Columns: PID 40, Build (flexible), Up 44, Active 52, CPU 40, Mem 46, action 56, with 6 pt gaps. Groups start folded.
+- Tray: panel 460 pt wide. Server rows 26 pt, group rows 28 pt, figures 17 pt. Columns: PID 40, Build (flexible), Up 52, Active 52, CPU 40, Mem 46, action 56, with 6 pt gaps. Groups start folded.
 - Timing:
   - "Waiting on you" covers the last 30 days.
   - Trello results are cached for 60 s; errors are not cached.
@@ -2869,7 +2869,7 @@ Replace `header()`, `footer()`, `caps()`, `servers()`, `line()` and `groupHead()
 - replace `draw` with:
 
 ```swift
-    /// Column rects from the right: button 56, mem 46, cpu 40, active 52, up 44, with 6 pt gaps; pid 40 at the left, build takes the rest.
+    /// Column rects from the right: button 56, mem 46, cpu 40, active 52, up 52, with 6 pt gaps; pid 40 at the left, build takes the rest.
     override func draw(_ dirty: NSRect) {
         let w = bounds.width
         let cols: [(CGFloat, CGFloat, NSTextAlignment, W)] = [

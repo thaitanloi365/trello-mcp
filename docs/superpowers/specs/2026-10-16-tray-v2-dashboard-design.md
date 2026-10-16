@@ -80,7 +80,7 @@ All sizes come from the approved mockup `tray-v2.html`.
 - **Panel:** 460 pt wide, with 16 pt side margins and 12 pt top padding.
 - **Header:** a 16 pt board mark, "Trello MCP" at 13 pt bold, and "live · every 2 s" at 11 pt muted, flush right. A 4 pt ink rule sits below it.
 - **Figures:** one row of four (Servers, Sessions, Memory, CPU). Each has a 10 pt uppercase muted label over a 17 pt bold value.
-- **Table:** columns PID 40, Build (flexible), Up 44, Active 52, CPU 40, Mem 46 and action 56, with 6 pt gaps. The header row is followed by a 1 pt ink rule.
+- **Table:** columns PID 40, Build (flexible), Up 52, Active 52, CPU 40, Mem 46 and action 56, with 6 pt gaps. The header row is followed by a 1 pt ink rule.
 - **Group row (28 pt, hairline below):**
   - a chevron (▶ folded, ▼ open), then the label in bold, cut in the middle;
   - after the label: the server count when folded, or "N · M sessions" when open;

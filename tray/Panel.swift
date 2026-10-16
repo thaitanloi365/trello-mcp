@@ -446,7 +446,7 @@ final class PanelController: NSViewController {
     /// A table line in fixed columns: PID, Build (flexible), Up, Active, CPU, Mem, action.
     func line(_ pid: NSView, _ build: NSView, _ up: NSView, _ active: NSView, _ cpu: NSView, _ mem: NSView, _ action: NSView) -> NSView {
         build.setContentCompressionResistancePriority(.init(100), for: .horizontal)
-        return hstack([fixed(pid, w: 40), stretch(build), fixed(up, w: 44), fixed(active, w: 52), fixed(cpu, w: 40), fixed(mem, w: 46), fixed(action, w: 56)], 6)
+        return hstack([fixed(pid, w: 40), stretch(build), fixed(up, w: 52), fixed(active, w: 52), fixed(cpu, w: 40), fixed(mem, w: 46), fixed(action, w: 56)], 6)
     }
 
     /// A group's row: a button that folds it, with its totals under the table's columns.
@@ -520,11 +520,11 @@ final class ServerLine: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    /// Column rects from the right: button 56, mem 46, cpu 40, active 52, up 44, with 6 pt gaps; pid 40 at the left, build takes the rest.
+    /// Column rects from the right: button 56, mem 46, cpu 40, active 52, up 52, with 6 pt gaps; pid 40 at the left, build takes the rest.
     override func draw(_ dirty: NSRect) {
         let w = bounds.width
         let cols: [(CGFloat, CGFloat, NSTextAlignment, W)] = [
-            (0, 40, .right, .b), (46, w - 314, .left, .r), (w - 262, 44, .right, .r),
+            (0, 40, .right, .b), (46, w - 322, .left, .r), (w - 270, 52, .right, .r),
             (w - 212, 52, .right, .r), (w - 154, 40, .right, .r), (w - 108, 46, .right, .b),
         ]
         for (v, c) in zip(values, cols) { drawText(v, NSRect(x: c.0, y: 5, width: c.1, height: 16), 12, c.3, p.ink, c.2) }
@@ -640,7 +640,7 @@ final class GroupLine: NSView {
         let np = NSMutableParagraphStyle()
         np.lineBreakMode = .byTruncatingMiddle      // a long folder keeps both ends
         let label = NSAttributedString(string: name, attributes: [.font: hvFont(12.5, .b), .foregroundColor: p.ink, .paragraphStyle: np])
-        let lw = min(ceil(label.size().width), w - 268 - 16 - cw - 6)    // up to the Up column
+        let lw = min(ceil(label.size().width), w - 218 - 16 - cw - 6)    // up to the Active column
         label.draw(in: NSRect(x: 16, y: 6, width: lw, height: 17))
         count.draw(in: NSRect(x: 16 + lw + 6, y: 8, width: cw, height: 15))
         drawText(cells[1], NSRect(x: w - 212, y: 6, width: 52, height: 16), 12, .r, p.muted, .right)
