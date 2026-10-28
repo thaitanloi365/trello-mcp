@@ -356,7 +356,7 @@ impl Server {
                 Method::GET,
                 &format!("/cards/{}", escape(id)),
                 json!({
-                    "fields": format!("{CARD_FIELDS},closed"),
+                    "fields": format!("{CARD_FIELDS},closed,labels"),
                     "board": true, "board_fields": "name,url",
                     "list": true, "list_fields": "name",
                     "members": true, "member_fields": "initials",

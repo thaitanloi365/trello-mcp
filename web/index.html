@@ -59,8 +59,8 @@ h1 { display: flex; align-items: center; gap: 14px; font-size: 40px; line-height
 .quote { margin: 0; font-size: 14px; border-left: 3px solid var(--ink); padding-left: 10px; overflow-wrap: anywhere; }
 .quote .small { display: block; margin-top: 2px; }
 .acts { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
-.acts .pick { width: 20px; height: 20px; margin: 0; align-self: center; accent-color: var(--red); cursor: pointer; }
-@media (pointer: coarse) { .acts .pick { width: 28px; height: 28px; } }
+.pick { width: 20px; height: 20px; margin: 0; align-self: center; accent-color: var(--red); cursor: pointer; }
+@media (pointer: coarse) { .pick { width: 28px; height: 28px; } }
 
 /* Loading: bars in the shape of the rows to come. */
 .sk { display: block; margin: 3px 0; max-width: 100%; background: var(--hair); animation: pulse 1.5s ease-in-out infinite; }
@@ -69,7 +69,7 @@ h1 { display: flex; align-items: center; gap: 14px; font-size: 40px; line-height
 @media (prefers-reduced-motion: reduce) { .sk { animation: none; } }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
-/* Tabs: Waiting on you | Ready for dev | In progress | Servers, over one heavy rule; a bar marks the open one. */
+/* Tabs: Waiting on you | Ready for dev | In progress | Servers | Config, over one heavy rule; a bar marks the open one. */
 .tabs { display: flex; flex-wrap: wrap; gap: 0 28px; margin-top: 44px; border-bottom: 4px solid var(--ink); }
 .tab { display: flex; align-items: baseline; gap: 10px; padding: 10px 0; font: inherit; font-size: 22px; font-weight: 700; letter-spacing: -.02em; color: var(--muted); background: transparent; border: 0; border-radius: 0; cursor: pointer; }
 .tab[aria-selected=true] { color: var(--ink); box-shadow: inset 0 4px 0 var(--ink); }
@@ -109,6 +109,13 @@ h1 { display: flex; align-items: center; gap: 14px; font-size: 40px; line-height
 @media (hover: hover) { .tk .tt a:hover { text-decoration: underline; } }
 .tk .small { display: block; }
 
+/* Config: enabled, the project, its repos. */
+.cfg { display: grid; grid-template-columns: 20px minmax(0, 1fr) minmax(0, 1.5fr); gap: 8px 14px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--hair); font-size: 14px; }
+.cfg label { cursor: pointer; overflow-wrap: anywhere; }
+.cfg .small { display: block; }
+.cfg .acts { justify-content: flex-start; align-items: center; }
+.cfg .combo { width: 200px; }
+
 /* Servers: big figures, then the folding table. */
 .figs { display: flex; flex-wrap: wrap; gap: 16px 40px; margin: 16px 0 14px; }
 .figs b { display: block; font-size: 34px; line-height: 1; letter-spacing: -.02em; margin-top: 4px; }
@@ -137,8 +144,10 @@ button.sg { width: 100%; min-height: 40px; padding: 0; font: inherit; font-size:
   .sg .lab .t { flex: 1 1 0; }
   .sg .lab .n { flex-basis: 100%; padding-left: 20px; }
   .figs b { font-size: 26px; }
+  .cfg { grid-template-columns: 20px minmax(0, 1fr); }
+  .cfg .acts { grid-column: 2; }
 }
-/* Phones: the four tabs in two rows of two, so a count coming or going never reflows the row. */
+/* Phones: the tabs in rows of two, so a count coming or going never reflows the row. */
 @media (max-width: 560px) {
   .tabs { display: grid; grid-template-columns: 1fr 1fr; }
   .tab { font-size: 18px; }
@@ -169,10 +178,11 @@ button.sg { width: 100%; min-height: 40px; padding: 0; font: inherit; font-size:
     <button class="tab" type="button" role="tab" id="tab-ready" aria-controls="lists-panel" data-tab="ready">Ready for dev <span class="n" id="ready-n"></span></button>
     <button class="tab" type="button" role="tab" id="tab-progress" aria-controls="lists-panel" data-tab="progress">In progress <span class="n" id="progress-n"></span></button>
     <button class="tab" type="button" role="tab" id="tab-servers" aria-controls="servers-panel" data-tab="servers">Servers <span class="n" id="servers-n"></span></button>
+    <button class="tab" type="button" role="tab" id="tab-config" aria-controls="config-panel" data-tab="config">Config</button>
   </div>
 
   <section id="waiting-panel" role="tabpanel" aria-labelledby="tab-waiting">
-    <p class="note">@mentions from the last 30 days, on cards in Ready for dev, In progress or Testing, that you haven't commented after.</p>
+    <p class="note">@mentions from the last 30 days, on cards in Ready for dev, In progress or Testing of the enabled projects, that you haven't commented after.</p>
     <div id="waiting"></div>
   </section>
 
@@ -192,6 +202,12 @@ button.sg { width: 100%; min-height: 40px; padding: 0; font: inherit; font-size:
   <section id="servers-panel" role="tabpanel" aria-labelledby="tab-servers" hidden>
     <p class="note">Live, every 2 s.</p>
     <div id="servers"></div>
+  </section>
+
+  <section id="config-panel" role="tabpanel" aria-labelledby="tab-config" hidden>
+    <p class="note">Only enabled projects are fetched: the project picker, Waiting on you and search. With none enabled, all are. A project's repos fill its repo picker for Send to Orca; with none, the repos matching its name do.</p>
+    <div class="status" id="config-status" aria-live="polite"></div>
+    <div id="config"></div>
   </section>
 </main>
 <script>
@@ -254,6 +270,14 @@ function listsBones() {
   const head = el('div', 'board');
   head.append(bone('180px', 13));
   return skeleton(head, ...times(6, cardBones));
+}
+function configBones() {
+  return skeleton(...times(8, () => {
+    const row = el('div', 'cfg'), acts = el('div', 'acts');
+    acts.append(bone('120px', 26), bone('200px', 26));
+    row.append(bone('20px', 20), bone('45%', 15), acts);
+    return row;
+  }));
 }
 function serversBones() {
   const figs = el('div', 'figs');
@@ -335,9 +359,11 @@ function renderWaiting(w) {
 }
 
 // Tabs: the choice stays in this browser. Ready for dev and In progress share the project bar.
-const TABS = ['waiting', 'ready', 'progress', 'servers'];
+const TABS = ['waiting', 'ready', 'progress', 'servers', 'config'];
+let tab = 'waiting';
 function showTab(t) {
   if (!TABS.includes(t)) t = 'waiting';
+  tab = t;
   for (const b of $('tabs').querySelectorAll('[role=tab]')) {
     const on = b.dataset.tab === t;
     b.setAttribute('aria-selected', String(on));
@@ -346,20 +372,33 @@ function showTab(t) {
   const lists = t === 'ready' || t === 'progress';
   $('waiting-panel').hidden = t !== 'waiting';
   $('servers-panel').hidden = t !== 'servers';
+  $('config-panel').hidden = t !== 'config';
   $('lists-panel').hidden = !lists;
   if (lists) $('lists-panel').setAttribute('aria-labelledby', 'tab-' + t);
   $('ready').hidden = t !== 'ready';
   $('progress').hidden = t !== 'progress';
   store.set('tab', t);
+  syncRefresh();
 }
 $('tabs').addEventListener('click', e => { const t = e.target.closest('[role=tab]')?.dataset.tab; if (t) showTab(t); });
 $('tabs').addEventListener('keydown', e => {
   const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
   if (!step) return;
-  const at = TABS.indexOf(store.get('tab') || 'waiting');
+  const at = TABS.indexOf(tab);
   const t = TABS[(at + step + TABS.length) % TABS.length];
   showTab(t);
   $('tab-' + t).focus();
+});
+// Refresh reloads the open tab only, with that tab's own loading state; the others keep theirs.
+const refreshing = new Set();
+const tabKey = t => t === 'ready' || t === 'progress' ? 'lists' : t;
+function syncRefresh() { $('refresh').disabled = refreshing.has(tabKey(tab)); }
+$('refresh').addEventListener('click', async () => {
+  const k = tabKey(tab);
+  if (refreshing.has(k)) return;
+  refreshing.add(k);
+  syncRefresh();
+  try { await RELOAD[k](); } finally { refreshing.delete(k); syncRefresh(); }
 });
 showTab(store.get('tab'));
 
@@ -482,7 +521,7 @@ function sendBtn(c, s) {
   const label = s ? 'In Orca' : 'Send to Orca';
   const b = el('button', s ? 'btn sm' : 'btn sm primary', label);
   b.type = 'button';
-  if (s) b.title = `${s.name}: mark it unread in Orca`;
+  if (s) b.title = `${s.name} (${s.id}): mark it unread in Orca`;
   b.addEventListener('click', async () => {
     const repo = $('repo').value, agent = $('agent').value;
     if (!repo && !s) { orcaStatus('Pick the repo for this project first.', true); repoBox.btn.focus(); return; }
@@ -493,7 +532,7 @@ function sendBtn(c, s) {
       b.textContent = d.existing ? 'In Orca' : 'Sent';
       orcaStatus(d.existing
         ? `${number(c)} already has ${d.name} in ${d.repo}: marked unread in Orca.`
-        : `${agent} is on ${number(c)} in ${d.name}, from ${d.base}.`);
+        : join(`${agent} is on ${number(c)} in ${d.name}, from ${d.base}.`, d.warning));
     } catch (e) {
       b.textContent = label;
       b.disabled = false;
@@ -533,7 +572,7 @@ $('send-picked').addEventListener('click', async () => {
     picked.clear();
     orcaStatus(d.planned
       ? `Claude is grouping ${plural(d.cards, 'card')} in ${d.repo}: it starts one ${agent} session per group in Orca.`
-      : `${agent} is on it in ${d.name}, from ${d.base}.`);
+      : join(`${agent} is on it in ${d.name}, from ${d.base}.`, d.warning));
     loadBoard(true);
   } catch (e) {
     orcaStatus(e.message, true);
@@ -594,27 +633,86 @@ async function loadBoard(quiet) {
   }
 }
 
-function fillBoards(boards) {
+// Every project you can see, with its Config settings; the picker shows the enabled ones, or all
+// while none is.
+let boards = null, boardsError = '', boardsSeq = 0, updatedAt = 0;
+const shownBoards = () => boards.some(b => b.enabled) ? boards.filter(b => b.enabled) : boards;
+const byName = (a, b) => (a.workspace || '').localeCompare(b.workspace || '') || a.name.localeCompare(b.name);
+function showMeta() {
+  $('meta').textContent = boards
+    ? `${plural(shownBoards().length, 'project')} · updated ${new Date(updatedAt * 1000).toLocaleTimeString([], { hour12: false })}`
+    : 'Trello unavailable';
+}
+function fillBoards() {
   const was = board() || store.get('board') || '';
-  const sorted = [...boards].sort((a, b) => (a.workspace || '').localeCompare(b.workspace || '') || a.name.localeCompare(b.name));
+  const shown = boards ? [...shownBoards()].sort(byName) : [];
   const opts = [el('option', '', 'Pick a project')];
   opts[0].value = '';
-  for (const b of sorted) {
+  for (const b of shown) {
     const o = el('option', '', b.workspace ? `${b.name} · ${b.workspace}` : b.name);
     o.value = b.id;
     opts.push(o);
   }
   $('board').replaceChildren(...opts);
-  $('board').value = boards.some(b => b.id === was) ? was : '';
-  $('board').disabled = false;
+  $('board').value = shown.some(b => b.id === was) ? was : '';
+  $('board').disabled = !boards;
   boardBox.sync();
+  pickRepo();
+}
+// True once the projects are in; the lists then load the picked one.
+async function loadBoards(fresh) {
+  const seq = ++boardsSeq;
+  try {
+    const d = await getJSON('/api/boards' + (fresh ? '?fresh=1' : ''));
+    if (seq !== boardsSeq) return false;
+    if (d.error) throw new Error(d.error);
+    boards = d.boards;
+    boardsError = '';
+    updatedAt = d.updatedAt;
+  } catch (e) {
+    if (seq !== boardsSeq) return false;
+    boards = null;
+    boardsError = e.message;
+    listsMessage(errorBox(e.message));
+  }
+  showMeta();
+  fillBoards();
+  renderConfig();
+  return !!boards;
 }
 
-let repos = null;
+// Orca's repos. A project's repo picker lists the repos mapped to it in Config, else those
+// matching its name, else all; a lone one is picked for you.
+let repos = null, reposError = '';
+const GENERIC = new Set(['sprint', 'tracker', 'board', 'dev', 'mvp', 'client', 'internal', 'team', 'the']);
+const squash = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+// A repo matches when its name or folder and the project's name, without [TAGS] and generic
+// words, start the same: LiveLaunch [CLIENT] has livelaunch-app, AHAI [INTERNAL] has ahai_backend.
+function matchRepos(b) {
+  const key = b.name.replace(/\[[^\]]*\]/g, ' ').toLowerCase().split(/[^a-z0-9]+/).filter(w => w && !GENERIC.has(w)).join('');
+  if (key.length < 3) return [];
+  return (repos || []).filter(r => [r.name, r.path.split('/').slice(-2, -1)[0] || ''].some(n => {
+    const s = squash(n);
+    return s.length >= 3 && (s.startsWith(key) || key.startsWith(s));
+  }));
+}
+function projectRepos(b) {
+  if (!b || !repos) return repos || [];
+  const mapped = repos.filter(r => b.repos.includes(r.id));
+  if (mapped.length) return mapped;
+  const matched = matchRepos(b);
+  return matched.length ? matched : repos;
+}
 function pickRepo() {
-  $('repo').disabled = !repos || !board();
-  $('repo').value = (board() && store.get('repo:' + board())) || '';
-  if ($('repo').selectedIndex < 0) $('repo').value = '';
+  const b = boards?.find(x => x.id === board());
+  const list = projectRepos(b);
+  const opts = [el('option', '', 'Pick a repo')];
+  opts[0].value = '';
+  for (const r of list) { const o = el('option', '', r.name); o.value = r.id; o.title = r.path; opts.push(o); }
+  $('repo').replaceChildren(...opts);
+  $('repo').disabled = !repos || !b;
+  const saved = b && store.get('repo:' + b.id);
+  $('repo').value = list.some(r => r.id === saved) ? saved : list.length === 1 ? list[0].id : '';
   repoBox.sync();
 }
 async function loadRepos() {
@@ -622,14 +720,13 @@ async function loadRepos() {
     const d = await getJSON('/api/orca/repos');
     if (d.error) throw new Error(d.error);
     repos = d.repos.sort((a, b) => a.name.localeCompare(b.name));
-    const opts = [el('option', '', 'Pick a repo')];
-    opts[0].value = '';
-    for (const r of repos) { const o = el('option', '', r.name); o.value = r.id; o.title = r.path; opts.push(o); }
-    $('repo').replaceChildren(...opts);
+    reposError = '';
   } catch (e) {
-    orcaStatus('Orca unavailable: ' + e.message, true);
+    reposError = 'Orca unavailable: ' + e.message;
+    orcaStatus(reposError, true);
   }
   pickRepo();
+  renderConfig();
 }
 $('board').addEventListener('change', () => { store.set('board', board()); $('orca-status').replaceChildren(); picked.clear(); syncPicked(); pickRepo(); loadBoard(); });
 $('repo').addEventListener('change', () => { if (board()) store.set('repo:' + board(), $('repo').value); });
@@ -638,38 +735,105 @@ if ($('agent').selectedIndex < 0) $('agent').value = 'claude';
 agentBox.sync();
 $('agent').addEventListener('change', () => store.set('agent', $('agent').value));
 
-// The first load and Refresh show skeletons; the 5-minute reload swaps the data in place.
-let loadingTrello = false, lastTrello = 0;
-async function loadTrello(fresh) {
-  if (loadingTrello) return;
-  loadingTrello = true;
-  $('refresh').disabled = true;
-  const quiet = !fresh && lastTrello > 0;
+// Waiting on you loads on its own: skeletons unless `quiet`; only the latest answer shows.
+let waitingSeq = 0;
+async function loadWaiting(fresh, quiet) {
+  const seq = ++waitingSeq;
   if (!quiet) {
     $('waiting').replaceChildren(skeleton(...times(3, waitBones)));
     $('waiting-n').textContent = '';
-    listsMessage(listsBones());
   }
   try {
-    const d = await getJSON('/api/trello' + (fresh ? '?fresh=1' : ''));
+    const d = await getJSON('/api/waiting' + (fresh ? '?fresh=1' : ''));
+    if (seq !== waitingSeq) return;
     if (d.error) throw new Error(d.error);
-    lastTrello = Date.now();
-    $('meta').textContent = `${plural(d.boards.length, 'board')} · updated ${new Date(d.updatedAt * 1000).toLocaleTimeString([], { hour12: false })}`;
-    renderWaiting(d.waiting);
-    fillBoards(d.boards);
-    pickRepo();
-    await loadBoard(quiet);
+    renderWaiting(d);
   } catch (e) {
-    $('meta').textContent = 'Trello unavailable';
+    if (seq !== waitingSeq) return;
     $('waiting').replaceChildren(errorBox(e.message));
     $('waiting-n').textContent = '';
-    listsMessage(errorBox(e.message));
-  } finally {
-    loadingTrello = false;
-    $('refresh').disabled = false;
   }
 }
-$('refresh').addEventListener('click', () => loadTrello(true));
+
+// Config: enable the projects to fetch and map each to its Orca repos; each change saves at once.
+// Re-renders keep the keyboard focus.
+function renderConfig() {
+  if (!boardsError && (!boards || (!repos && !reposError))) return; // the skeleton stays
+  const focused = document.activeElement?.dataset?.key;
+  const out = boardsError ? [errorBox(boardsError)] : [
+    ...(reposError ? [errorBox(reposError)] : []),
+    ...[...boards].sort(byName).map(configRow),
+  ];
+  $('config').replaceChildren(...out);
+  if (focused) $('config').querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus();
+}
+function configRow(b) {
+  const row = el('div', 'cfg');
+  const on = el('input', 'pick');
+  on.type = 'checkbox';
+  on.checked = b.enabled;
+  on.id = 'cfg-' + b.id;
+  on.dataset.key = on.id;
+  // Enabling a project with no repos maps the ones matching its name.
+  on.addEventListener('change', () => saveProject(b, on.checked, on.checked && !b.repos.length ? matchRepos(b).map(r => r.id) : b.repos));
+  const name = el('div'), lab = el('label', 'bold', b.name);
+  lab.htmlFor = on.id;
+  name.append(lab, el('span', 'small', b.workspace || ''));
+  const acts = el('div', 'acts');
+  const mapped = (repos || []).filter(r => b.repos.includes(r.id));
+  for (const r of mapped) {
+    const x = el('button', 'btn sm', r.name + ' ×');
+    x.type = 'button';
+    x.title = r.path;
+    x.dataset.key = `rm-${b.id}-${r.id}`;
+    x.setAttribute('aria-label', `Remove ${r.name} from ${b.name}`);
+    x.addEventListener('click', () => saveProject(b, b.enabled, b.repos.filter(id => id !== r.id)));
+    acts.append(x);
+  }
+  if (repos) {
+    const matched = matchRepos(b), ids = new Set(matched.map(r => r.id));
+    const sel = el('select'), label = el('span', 'sr', `Add a repo to ${b.name}`);
+    sel.id = 'add-' + b.id;
+    sel.hidden = true;
+    label.id = sel.id + '-label';
+    const opts = [el('option', '', 'Add a repo')];
+    opts[0].value = '';
+    // The repos matching the project's name come first.
+    for (const r of [...repos].sort((x, y) => ids.has(y.id) - ids.has(x.id))) {
+      if (b.repos.includes(r.id)) continue;
+      const o = el('option', '', r.name);
+      o.value = r.id;
+      o.title = r.path;
+      opts.push(o);
+    }
+    sel.append(...opts);
+    acts.append(label, sel);
+    const box = combo(sel, 'repo');
+    box.btn.dataset.key = sel.id;
+    sel.addEventListener('change', () => saveProject(b, b.enabled, [...b.repos, sel.value]));
+    if (!mapped.length) acts.append(el('span', 'small', matched.length ? 'Name match: ' + matched.map(r => r.name).join(', ') : 'No match: the picker lists every repo'));
+  }
+  row.append(on, name, acts);
+  return row;
+}
+async function saveProject(b, enabled, ids) {
+  const scoped = b.enabled;
+  try {
+    const d = await postJSON('/api/project?' + new URLSearchParams({ id: b.id, enabled: enabled ? '1' : '0', repos: ids.join(',') }));
+    b.enabled = d.enabled;
+    b.repos = d.repos;
+    $('config-status').replaceChildren();
+  } catch (e) {
+    $('config-status').replaceChildren(errorBox(`${b.name}: ${e.message}`));
+  }
+  renderConfig();
+  const was = board();
+  fillBoards();
+  showMeta();
+  if (board() !== was) loadBoard();
+  // Waiting on you covers the enabled projects: a change there reloads it.
+  if (b.enabled !== scoped) loadWaiting(false);
+}
 
 // Search: 300 ms after typing stops, at once on Enter; only the latest answer shows.
 let searchTimer, searchSeq = 0;
@@ -783,13 +947,31 @@ async function loadServers() {
   catch (e) { $('servers').replaceChildren(errorBox(e.message)); }
 }
 
+// What Refresh does on each tab.
+const RELOAD = {
+  waiting: () => loadWaiting(true),
+  lists: async () => { listsMessage(listsBones()); if (await loadBoards(true)) await loadBoard(); },
+  servers: loadServers,
+  config: () => { $('config').replaceChildren(configBones()); return Promise.all([loadBoards(true), loadRepos()]); },
+};
+// Every 5 minutes the Trello tabs swap fresh data in place.
+let lastLoad = Date.now();
+function reloadQuietly() {
+  lastLoad = Date.now();
+  loadWaiting(false, true);
+  loadBoards(false).then(ok => { if (ok) loadBoard(true); });
+}
+
 $('servers').replaceChildren(serversBones());
+$('config').replaceChildren(configBones());
+listsMessage(listsBones());
 loadServers();
+loadWaiting(false);
 loadRepos();
-loadTrello(false);
+loadBoards(false).then(ok => { if (ok) loadBoard(); });
 setInterval(() => { if (!document.hidden) loadServers(); }, 2000);
-setInterval(() => { if (!document.hidden) loadTrello(false); }, 5 * 60 * 1000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { loadServers(); if (Date.now() - lastTrello >= 5 * 60 * 1000) loadTrello(false); } });
+setInterval(() => { if (!document.hidden) reloadQuietly(); }, 5 * 60 * 1000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { loadServers(); if (Date.now() - lastLoad >= 5 * 60 * 1000) reloadQuietly(); } });
 </script>
 </body>
 </html>

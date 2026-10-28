@@ -1,11 +1,13 @@
 //! Send to Orca: one worktree per card, or per group of cards, named after them so a card never
-//! gets two, branched from what the repo's main folder has checked out, with an agent told to fix
-//! the cards, run the tests, open a PR into that branch, merge it and remove the worktree. Send
-//! selected starts a planner that groups the cards and sends each group.
+//! gets two, branched from what the repo's main folder has checked out, with an agent in bypass
+//! mode told to fix the cards (a prompt for snags, features or spikes, from their labels), run the
+//! tests, open a PR into that branch, merge it and remove the worktree. Each card's session is
+//! saved in its own file. Send selected starts a planner that groups the cards and sends each group.
 
 use std::{
     fs::File,
     io::{Read, Seek},
+    path::Path,
     process::Stdio,
     time::Duration,
 };
@@ -13,11 +15,15 @@ use std::{
 use serde_json::{Value, json};
 use tokio::process::Command;
 
-/// The page's agent names, and Orca's ids for them.
+/// The page's agent names, and how each starts in bypass mode with the prompt as its last
+/// argument: Orca's `worktree create --agent` cannot pass flags.
 pub(crate) const AGENTS: [(&str, &str); 3] = [
-    ("claude", "claude"),
-    ("codex", "codex"),
-    ("agy", "antigravity"),
+    ("claude", "claude --dangerously-skip-permissions"),
+    ("codex", "codex --dangerously-bypass-approvals-and-sandbox"),
+    (
+        "agy",
+        "agy --dangerously-skip-permissions --prompt-interactive",
+    ),
 ];
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -114,13 +120,67 @@ async fn repo_of(bin: &str, repo_id: &str) -> Result<(String, String), String> {
         .ok_or_else(|| format!("no Orca repo {repo_id:?}"))
 }
 
-/// Orca's id for one of the page's agents.
-fn agent_id(agent: &str) -> Result<&'static str, String> {
+/// The bypass-mode command for one of the page's agents.
+fn launch(agent: &str) -> Result<&'static str, String> {
     AGENTS
         .iter()
         .find(|(a, _)| *a == agent)
-        .map(|(_, id)| *id)
+        .map(|(_, cmd)| *cmd)
         .ok_or_else(|| format!("unknown agent {agent:?}"))
+}
+
+/// What a card asks for, from its labels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Kind {
+    Snag,
+    Feature,
+    Spike,
+    Other,
+}
+
+impl Kind {
+    /// A spike, else a snag or bug, else a feature, enhancement or change request.
+    pub(crate) fn of<'a>(labels: impl IntoIterator<Item = &'a str>) -> Kind {
+        let labels: Vec<String> = labels.into_iter().map(str::to_lowercase).collect();
+        let has = |w: &str| labels.iter().any(|l| l.contains(w));
+        if has("spike") {
+            Kind::Spike
+        } else if has("snag") || has("bug") {
+            Kind::Snag
+        } else if has("feature") || has("enhancement") || has("change request") {
+            Kind::Feature
+        } else {
+            Kind::Other
+        }
+    }
+
+    /// How the agent is told to work on a card of this kind.
+    fn hint(self) -> Option<&'static str> {
+        match self {
+            Kind::Snag => Some(
+                "a snag (a bug): reproduce it first, find the root cause, add a test that fails without the fix, then make the smallest fix",
+            ),
+            Kind::Feature => Some(
+                "a feature: build what its description, checklists and acceptance criteria ask, no more, with tests for the new behavior",
+            ),
+            Kind::Spike => Some(
+                "a spike: investigate it and report the findings, the options and your recommendation, with no code change for it",
+            ),
+            Kind::Other => None,
+        }
+    }
+}
+
+/// A card as Orca gets it: its short link, `#<number> <name>`, and its kind.
+#[derive(Clone, Debug)]
+pub(crate) struct Card {
+    pub(crate) link: String,
+    pub(crate) title: String,
+    pub(crate) kind: Kind,
+}
+
+fn card_url(link: &str) -> String {
+    format!("https://trello.com/c/{link}")
 }
 
 /// Every worktree in every repo, with its repo's name and its agents.
@@ -158,6 +218,7 @@ fn sessions_of(wt: &Value) -> Vec<Value> {
         .map(|card| {
             json!({
                 "card": card,
+                "id": wt["worktreeId"],
                 "repo": wt["repo"],
                 "name": wt["displayName"],
                 "agent": a["agentType"],
@@ -172,18 +233,46 @@ pub(crate) async fn sessions(bin: &str) -> Result<Vec<Value>, String> {
     Ok(worktrees(bin).await?.iter().flat_map(sessions_of).collect())
 }
 
-/// What the agent is told. One line: a newline could submit a TUI prompt early.
-fn prompt(urls: &[String], base: &str) -> String {
-    let cards = match urls {
+/// What the agent is told: research for spikes only, else fix, with a hint per snag, feature or
+/// spike. One line: a newline could submit a TUI prompt early.
+fn prompt(cards: &[&Card], base: &str) -> String {
+    let urls: Vec<String> = cards.iter().map(|c| card_url(&c.link)).collect();
+    let read = "1) Read each card with the Trello MCP tools: description, checklists, attachments and comments.";
+    if cards.iter().all(|c| c.kind == Kind::Spike) {
+        let what = match urls.as_slice() {
+            [one] => format!("the Trello card {one}"),
+            _ => format!(
+                "the Trello cards {} , one after another in that order",
+                urls.join(" ")
+            ),
+        };
+        return format!(
+            "Research {what} . Spikes: answer their questions without changing the code: no commit, no push, no pull request. \
+             {read} \
+             2) Investigate in this worktree: read the code and run experiments, undoing any change they make. \
+             3) Report what you found, the options with their trade-offs and your recommendation, then stop and keep this worktree."
+        );
+    }
+    let cards_text = match urls.as_slice() {
         [one] => format!("the Trello card {one}"),
         _ => format!(
             "the Trello cards {} , one after another in that order, all in this worktree and one pull request",
             urls.join(" ")
         ),
     };
+    let hints: String = cards
+        .iter()
+        .filter_map(|c| {
+            let h = c.kind.hint()?;
+            Some(match cards {
+                [_] => format!("It is {h}. "),
+                _ => format!("{} is {h}. ", card_url(&c.link)),
+            })
+        })
+        .collect();
     format!(
-        "Fix {cards} . \
-         1) Read each card with the Trello MCP tools: description, checklists, attachments and comments. \
+        "Fix {cards_text} . {hints}\
+         {read} \
          2) Make the change in this worktree; its branch was made from {base}. \
          3) Run the project's tests and fix every failure. \
          4) Commit, push this branch and open a pull request into {base} (gh pr create --base {base}). \
@@ -193,36 +282,52 @@ fn prompt(urls: &[String], base: &str) -> String {
     )
 }
 
-/// Creates one worktree in `repo_id` for `cards` (short link, title), in that order, with `agent`
-/// working through them. Cards that already have a worktree in any repo are skipped: one card, one
-/// agent. When all have one, marks the first one's unread in Orca's sidebar and says so.
+/// Saves `session` as each of `links`' Orca session, one file per card in `dir`: the dashboard
+/// and the planner's `orca-send` may write at once.
+fn save_session(dir: &Path, links: &[&str], session: &Value) -> Result<(), String> {
+    let fail = |e: std::io::Error| format!("save the Orca session in {}: {e}", dir.display());
+    std::fs::create_dir_all(dir).map_err(fail)?;
+    let data = serde_json::to_vec_pretty(session).map_err(|e| e.to_string())?;
+    for link in links {
+        let file = dir.join(format!("{}.json", link.to_lowercase()));
+        crate::util::write_atomic(&file, &data, 0o600, ".orca-session").map_err(fail)?;
+    }
+    Ok(())
+}
+
+/// Creates one worktree in `repo_id` for `cards`, in that order, with `agent` working through them
+/// in bypass mode, and saves the session in `saved` for each card. Cards that already have a
+/// worktree in any repo are skipped: one card, one agent. When all have one, marks the first one's
+/// unread in Orca's sidebar and says so.
 pub(crate) async fn send(
     bin: &str,
     repo_id: &str,
     agent: &str,
-    cards: &[(String, String)],
+    cards: &[Card],
+    saved: &Path,
 ) -> Result<Value, String> {
-    let agent_id = agent_id(agent)?;
+    let launch = launch(agent)?;
     let wts = worktrees(bin).await?;
     let in_orca = |link: &str| {
         wts.iter()
             .find(|w| cards_of(w).contains(&link.to_lowercase()))
     };
-    let mut fresh: Vec<&(String, String)> = Vec::new();
+    let mut fresh: Vec<&Card> = Vec::new();
     for c in cards {
-        if in_orca(&c.0).is_none() && !fresh.iter().any(|f| f.0.eq_ignore_ascii_case(&c.0)) {
+        if in_orca(&c.link).is_none() && !fresh.iter().any(|f| f.link.eq_ignore_ascii_case(&c.link))
+        {
             fresh.push(c);
         }
     }
     let skipped: Vec<&str> = cards
         .iter()
-        .filter(|(l, _)| in_orca(l).is_some())
-        .map(|(l, _)| l.as_str())
+        .filter(|c| in_orca(&c.link).is_some())
+        .map(|c| c.link.as_str())
         .collect();
     if fresh.is_empty() {
         let (link, wt) = cards
             .first()
-            .and_then(|(l, _)| Some((l, in_orca(l)?)))
+            .and_then(|c| Some((&c.link, in_orca(&c.link)?)))
             .ok_or("no cards")?;
         let id = format!("id:{}", wt["worktreeId"].as_str().unwrap_or_default());
         let _ = orca(bin, &["worktree", "set", "--worktree", &id, "--unread"]).await;
@@ -230,9 +335,9 @@ pub(crate) async fn send(
             json!({"existing": true, "name": format!("trello-{link}"), "repo": wt["repo"], "path": wt["path"]}),
         );
     }
-    let links: Vec<&str> = fresh.iter().map(|(l, _)| l.as_str()).collect();
+    let links: Vec<&str> = fresh.iter().map(|c| c.link.as_str()).collect();
     let name = format!("trello-{}", links.join("-"));
-    let (_, path) = repo_of(bin, repo_id).await?;
+    let (repo_name, path) = repo_of(bin, repo_id).await?;
     let repo = format!("id:{repo_id}");
     let base = output(
         Command::new("git").args(["-C", &path, "branch", "--show-current"]),
@@ -245,10 +350,7 @@ pub(crate) async fn send(
             "{path} has no branch checked out: check one out to build on"
         ));
     }
-    let urls: Vec<String> = links
-        .iter()
-        .map(|l| format!("https://trello.com/c/{l}"))
-        .collect();
+    let urls: Vec<String> = links.iter().map(|l| card_url(l)).collect();
     let created = orca(
         bin,
         &[
@@ -261,18 +363,15 @@ pub(crate) async fn send(
             "--base-branch",
             &base,
             "--no-parent",
-            "--agent",
-            agent_id,
-            "--prompt",
-            &prompt(&urls, &base),
             "--comment",
             &urls.join(" "),
         ],
     )
     .await?;
     let wt = &created["worktree"];
-    let id = format!("id:{}", wt["id"].as_str().unwrap_or_default());
-    let title: Vec<&str> = fresh.iter().map(|(_, t)| t.as_str()).collect();
+    let wt_id = wt["id"].as_str().unwrap_or_default();
+    let id = format!("id:{wt_id}");
+    let title: Vec<&str> = fresh.iter().map(|c| c.title.as_str()).collect();
     let _ = orca(
         bin,
         &[
@@ -285,9 +384,31 @@ pub(crate) async fn send(
         ],
     )
     .await;
-    Ok(
-        json!({"existing": false, "name": name, "base": base, "agent": agent, "path": wt["path"], "skipped": skipped}),
+    let command = format!("{launch} {}", sh(&prompt(&fresh, &base)));
+    let term = orca(
+        bin,
+        &[
+            "terminal",
+            "create",
+            "--worktree",
+            &id,
+            "--command",
+            &command,
+        ],
     )
+    .await
+    .map_err(|e| format!("{name} was made, but its agent did not start: {e}"))?;
+    let mut v = json!({"existing": false, "name": name, "base": base, "agent": agent,
+        "path": wt["path"], "skipped": skipped, "worktree": wt_id,
+        "terminal": term["terminal"]["handle"]});
+    let session = json!({"worktree": wt_id, "terminal": v["terminal"], "repo": repo_name,
+        "name": name, "base": base, "agent": agent, "path": wt["path"], "cards": urls,
+        "sentAt": super::now() as i64});
+    // The agent is already on it: a save that fails is reported, not a failed send.
+    if let Err(e) = save_session(saved, &links, &session) {
+        v["warning"] = json!(e);
+    }
+    Ok(v)
 }
 
 /// Send selected: drops the cards already in Orca, then sends a lone card straight to `send`, or
@@ -297,18 +418,19 @@ pub(crate) async fn send_selected(
     cli: &str,
     repo_id: &str,
     agent: &str,
-    cards: &[(String, String)],
+    cards: &[Card],
+    saved: &Path,
 ) -> Result<Value, String> {
-    agent_id(agent)?;
+    launch(agent)?;
     let busy: Vec<String> = worktrees(bin).await?.iter().flat_map(cards_of).collect();
-    let fresh: Vec<(String, String)> = cards
+    let fresh: Vec<Card> = cards
         .iter()
-        .filter(|(l, _)| !busy.contains(&l.to_lowercase()))
+        .filter(|c| !busy.contains(&c.link.to_lowercase()))
         .cloned()
         .collect();
     match fresh.len() {
         0 => Err("every picked card is already in Orca".into()),
-        1 => send(bin, repo_id, agent, &fresh).await,
+        1 => send(bin, repo_id, agent, &fresh, saved).await,
         _ => plan(bin, cli, repo_id, agent, &fresh).await,
     }
 }
@@ -318,24 +440,20 @@ fn sh(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-/// Starts Claude in a terminal in the repo's main folder, told to group `cards` and run
-/// `cli orca-send` once per group: one fresh `agent` session each. It may read cards and run that
-/// command; anything else asks first, in its terminal.
+/// Starts Claude in bypass mode in a terminal in the repo's main folder, told to group `cards`
+/// and run `cli orca-send` once per group: one fresh `agent` session each.
 async fn plan(
     bin: &str,
     cli: &str,
     repo_id: &str,
     agent: &str,
-    cards: &[(String, String)],
+    cards: &[Card],
 ) -> Result<Value, String> {
     if cli.is_empty() {
         return Err("cannot find this trello-mcp binary for the planner".into());
     }
     let (name, path) = repo_of(bin, repo_id).await?;
-    let urls: Vec<String> = cards
-        .iter()
-        .map(|(l, _)| format!("https://trello.com/c/{l}"))
-        .collect();
+    let urls: Vec<String> = cards.iter().map(|c| card_url(&c.link)).collect();
     let prompt = format!(
         "Group these Trello cards into Orca sessions: {} . Do not change any files here. \
          1) Read each card with the Trello MCP tools (get_card): description, checklists and comments. \
@@ -344,18 +462,10 @@ async fn plan(
          4) Then list the groups, with one line each on why, and stop.",
         urls.join(" ")
     );
-    let command = [
-        "claude".into(),
-        sh(&prompt),
-        "--allowedTools".into(),
-        sh("mcp__trello__get_card"),
-        sh("mcp__trello__find_checklist_items"),
-        sh(&format!("Bash({cli} orca-send *)")),
-    ]
-    .join(" ");
+    let command = format!("{} {}", launch("claude")?, sh(&prompt));
     let numbers: Vec<&str> = cards
         .iter()
-        .map(|(_, t)| t.split(' ').next().unwrap_or_default())
+        .map(|c| c.title.split(' ').next().unwrap_or_default())
         .collect();
     orca(
         bin,
@@ -382,7 +492,7 @@ pub(crate) mod tests {
 
     /// A stand-in `orca` in `dir` that logs each call's arguments, one per line, to `dir/log` and
     /// answers `worktree ps` with `dir/worktrees.json`; its one repo, r1, is a git repo on
-    /// branch feature-x.
+    /// branch feature-x. Sessions are saved in `dir/saved`.
     pub(crate) fn fake_orca(dir: &Path) -> String {
         let repo = dir.join("repo");
         let git = std::process::Command::new("git")
@@ -404,6 +514,7 @@ case "$1 $2" in
   "repo list") echo '{{"ok":true,"result":{{"repos":[{{"id":"r1","kind":"git","displayName":"app","path":"{repo}"}},{{"id":"f1","kind":"folder","displayName":"notes","path":"/n"}}]}}}}' ;;
   "worktree ps") cat '{d}/worktrees.json' ;;
   "worktree create") echo '{{"ok":true,"result":{{"worktree":{{"id":"r1::/wt/trello-AbCd1234","path":"/wt/trello-AbCd1234"}}}}}}' ;;
+  "terminal create") echo '{{"ok":true,"result":{{"terminal":{{"handle":"term_1"}}}}}}' ;;
   *) echo '{{"ok":true,"result":{{}}}}' ;;
 esac
 "#,
@@ -435,17 +546,21 @@ esac
     async fn send_creates_a_worktree_named_after_the_card() {
         let dir = tempfile::tempdir().unwrap();
         let bin = fake_orca(dir.path());
+        let saved = dir.path().join("saved");
         let v = send(
             &bin,
             "r1",
             "agy",
             &[card("AbCd1234", "#348 Block physical address")],
+            &saved,
         )
         .await
         .unwrap();
         assert_eq!(
             v,
-            json!({"existing": false, "name": "trello-AbCd1234", "base": "feature-x", "agent": "agy", "path": "/wt/trello-AbCd1234", "skipped": []})
+            json!({"existing": false, "name": "trello-AbCd1234", "base": "feature-x", "agent": "agy",
+                "path": "/wt/trello-AbCd1234", "skipped": [], "worktree": "r1::/wt/trello-AbCd1234",
+                "terminal": "term_1"})
         );
         let calls = logged(dir.path());
         let create = calls
@@ -455,17 +570,8 @@ esac
         assert_eq!(flag(create, "--repo"), "id:r1");
         assert_eq!(flag(create, "--name"), "trello-AbCd1234");
         assert_eq!(flag(create, "--base-branch"), "feature-x");
-        assert_eq!(flag(create, "--agent"), "antigravity");
         assert!(create.contains(&"--no-parent".to_string()));
-        let p = flag(create, "--prompt");
-        assert!(
-            p.contains("https://trello.com/c/AbCd1234")
-                && p.contains("tests")
-                && p.contains("gh pr create --base feature-x")
-                && p.contains("gh pr merge")
-                && p.contains("orca worktree rm --worktree active"),
-            "{p}"
-        );
+        assert!(!create.contains(&"--agent".to_string()), "{create:?}");
         let set = calls
             .iter()
             .find(|c| c[..2] == ["worktree", "set"])
@@ -474,11 +580,121 @@ esac
             (flag(set, "--worktree"), flag(set, "--display-name")),
             ("id:r1::/wt/trello-AbCd1234", "#348 Block physical address")
         );
+        // The agent starts in the new worktree, in bypass mode, with the prompt as one word.
+        let term = calls
+            .iter()
+            .find(|c| c[..2] == ["terminal", "create"])
+            .unwrap();
+        assert_eq!(flag(term, "--worktree"), "id:r1::/wt/trello-AbCd1234");
+        let words = shell_words(flag(term, "--command"));
+        assert_eq!(
+            words[..3],
+            [
+                "agy",
+                "--dangerously-skip-permissions",
+                "--prompt-interactive"
+            ]
+        );
+        let p = &words[3];
+        assert!(
+            words.len() == 4
+                && p.contains("https://trello.com/c/AbCd1234")
+                && p.contains("tests")
+                && p.contains("gh pr create --base feature-x")
+                && p.contains("gh pr merge")
+                && p.contains("orca worktree rm --worktree active"),
+            "{words:?}"
+        );
+        let session: Value =
+            serde_json::from_slice(&std::fs::read(saved.join("abcd1234.json")).unwrap()).unwrap();
+        assert_eq!(
+            (
+                &session["worktree"],
+                &session["terminal"],
+                &session["repo"],
+                &session["agent"]
+            ),
+            (
+                &json!("r1::/wt/trello-AbCd1234"),
+                &json!("term_1"),
+                &json!("app"),
+                &json!("agy")
+            ),
+            "{session}"
+        );
     }
 
-    /// A card as `send` takes it.
-    fn card(link: &str, title: &str) -> (String, String) {
-        (link.into(), title.into())
+    /// A card as `send` takes it, with no label that picks a prompt.
+    fn card(link: &str, title: &str) -> Card {
+        Card {
+            link: link.into(),
+            title: title.into(),
+            kind: Kind::Other,
+        }
+    }
+
+    /// The words the shell reads `command` as.
+    fn shell_words(command: &str) -> Vec<String> {
+        let out = std::process::Command::new("/bin/sh")
+            .args(["-c", &format!("printf '%s\\n' {command}")])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn labels_pick_the_prompt() {
+        assert_eq!(Kind::of(["Snag", "UI/UX"]), Kind::Snag);
+        assert_eq!(Kind::of(["Bug"]), Kind::Snag);
+        assert_eq!(Kind::of(["Feature/Enhancement", "MVP"]), Kind::Feature);
+        assert_eq!(Kind::of(["Change Request"]), Kind::Feature);
+        assert_eq!(Kind::of(["SPIKE", "Feature/Enhancement"]), Kind::Spike);
+        assert_eq!(Kind::of(["Sync", "Client Feedback"]), Kind::Other);
+        assert_eq!(Kind::of([]), Kind::Other);
+
+        let with = |link: &str, kind| Card {
+            kind,
+            ..card(link, "#1 x")
+        };
+        let snag = with("AbCd1234", Kind::Snag);
+        let p = prompt(&[&snag], "dev");
+        assert!(
+            p.starts_with("Fix the Trello card https://trello.com/c/AbCd1234 . It is a snag (a bug): reproduce it first")
+                && p.contains("gh pr merge"),
+            "{p}"
+        );
+        let plain = prompt(&[&card("AbCd1234", "#1 x")], "dev");
+        assert!(
+            plain.starts_with("Fix the Trello card https://trello.com/c/AbCd1234 . 1) Read"),
+            "{plain}"
+        );
+
+        let spike = with("Ef56Gh78", Kind::Spike);
+        let p = prompt(&[&spike], "dev");
+        assert!(
+            p.starts_with(
+                "Research the Trello card https://trello.com/c/Ef56Gh78 . Spikes: answer"
+            ) && !p.contains("gh pr")
+                && p.contains("keep this worktree"),
+            "{p}"
+        );
+        // A spike in a group with code to change: the group still ships, the spike gets a note.
+        let p = prompt(&[&snag, &spike], "dev");
+        assert!(
+            p.starts_with("Fix the Trello cards https://trello.com/c/AbCd1234 https://trello.com/c/Ef56Gh78 , one after another")
+                && p.contains("https://trello.com/c/AbCd1234 is a snag")
+                && p.contains("https://trello.com/c/Ef56Gh78 is a spike")
+                && p.contains("gh pr merge"),
+            "{p}"
+        );
+        assert!(
+            !p.contains('\n'),
+            "one line: a newline could submit a TUI prompt early"
+        );
     }
 
     #[test]
@@ -488,16 +704,16 @@ esac
         assert_eq!(
             sessions_of(&working),
             [
-                json!({"card": "abcd1234", "repo": "app", "name": "#1 x", "agent": "claude", "state": "done"})
+                json!({"card": "abcd1234", "id": null, "repo": "app", "name": "#1 x", "agent": "claude", "state": "done"})
             ]
         );
-        let group = json!({"repo": "web", "displayName": "#2 y + #3 z", "path": "/wt/other",
+        let group = json!({"worktreeId": "r2::/wt/other", "repo": "web", "displayName": "#2 y + #3 z", "path": "/wt/other",
             "branch": "refs/heads/me/TRELLO-Ef56Gh78-Ij90Kl12", "status": "active", "agents": []});
         assert_eq!(
             sessions_of(&group),
             [
-                json!({"card": "ef56gh78", "repo": "web", "name": "#2 y + #3 z", "agent": null, "state": "active"}),
-                json!({"card": "ij90kl12", "repo": "web", "name": "#2 y + #3 z", "agent": null, "state": "active"}),
+                json!({"card": "ef56gh78", "id": "r2::/wt/other", "repo": "web", "name": "#2 y + #3 z", "agent": null, "state": "active"}),
+                json!({"card": "ij90kl12", "id": "r2::/wt/other", "repo": "web", "name": "#2 y + #3 z", "agent": null, "state": "active"}),
             ]
         );
         for other in [
@@ -536,6 +752,7 @@ esac
                 card("Ef56Gh78", "#2 b"),
                 card("Ij90Kl12", "#3 c"),
             ],
+            &dir.path().join("saved"),
         )
         .await
         .unwrap();
@@ -554,13 +771,24 @@ esac
             flag(create, "--comment"),
             "https://trello.com/c/AbCd1234 https://trello.com/c/Ij90Kl12"
         );
-        let p = flag(create, "--prompt");
+        let term = calls
+            .iter()
+            .find(|c| c[1] == "create" && c[0] == "terminal")
+            .unwrap();
+        let words = shell_words(flag(term, "--command"));
+        assert_eq!(words[..2], ["claude", "--dangerously-skip-permissions"]);
         assert!(
-            p.starts_with("Fix the Trello cards https://trello.com/c/AbCd1234 https://trello.com/c/Ij90Kl12 , one after another in that order"),
-            "{p}"
+            words[2].starts_with("Fix the Trello cards https://trello.com/c/AbCd1234 https://trello.com/c/Ij90Kl12 , one after another in that order"),
+            "{words:?}"
         );
         let set = calls.iter().find(|c| c[1] == "set").unwrap();
         assert_eq!(flag(set, "--display-name"), "#1 a + #3 c");
+        let saved = dir.path().join("saved");
+        assert!(saved.join("abcd1234.json").exists() && saved.join("ij90kl12.json").exists());
+        assert!(
+            !saved.join("ef56gh78.json").exists(),
+            "a skipped card keeps its session"
+        );
     }
 
     #[tokio::test]
@@ -575,8 +803,16 @@ esac
         )
         .unwrap();
         let cli = "/x/trello-mcp";
-        let all_in_orca =
-            send_selected(&bin, cli, "r1", "codex", &[card("Ef56Gh78", "#2 b")]).await;
+        let saved = dir.path().join("saved");
+        let all_in_orca = send_selected(
+            &bin,
+            cli,
+            "r1",
+            "codex",
+            &[card("Ef56Gh78", "#2 b")],
+            &saved,
+        )
+        .await;
         assert_eq!(
             all_in_orca.unwrap_err(),
             "every picked card is already in Orca"
@@ -591,6 +827,7 @@ esac
                 card("Ef56Gh78", "#2 b"),
                 card("Ij90Kl12", "#3 c"),
             ],
+            &saved,
         )
         .await
         .unwrap();
@@ -607,33 +844,26 @@ esac
         let repo = dir.path().join("repo");
         assert_eq!(flag(term, "--worktree"), format!("path:{}", repo.display()));
         assert_eq!(flag(term, "--title"), "Group #1 #3");
-        // The shell reads the command as claude, its prompt, then the allowed tools.
-        let command = flag(term, "--command");
-        let out = std::process::Command::new("/bin/sh")
-            .args(["-c", &command.replacen("claude", r"printf '%s\n'", 1)])
-            .output()
-            .unwrap();
-        let out = String::from_utf8(out.stdout).unwrap();
-        let words: Vec<&str> = out.lines().collect();
-        assert_eq!(
-            words[1..],
-            [
-                "--allowedTools",
-                "mcp__trello__get_card",
-                "mcp__trello__find_checklist_items",
-                "Bash(/x/trello-mcp orca-send *)"
-            ],
-            "{command}"
-        );
+        // The shell reads the command as claude in bypass mode, then its prompt.
+        let words = shell_words(flag(term, "--command"));
+        assert_eq!(words[..2], ["claude", "--dangerously-skip-permissions"]);
+        assert_eq!(words.len(), 3, "{words:?}");
         assert!(
-            words[0].starts_with("Group these Trello cards into Orca sessions: https://trello.com/c/AbCd1234 https://trello.com/c/Ij90Kl12 .")
-                && words[0].contains("run: /x/trello-mcp orca-send --repo r1 --agent codex followed by"),
+            words[2].starts_with("Group these Trello cards into Orca sessions: https://trello.com/c/AbCd1234 https://trello.com/c/Ij90Kl12 .")
+                && words[2].contains("run: /x/trello-mcp orca-send --repo r1 --agent codex followed by"),
             "{}",
-            words[0]
+            words[2]
         );
-        let lone = send_selected(&bin, cli, "r1", "codex", &[card("AbCd1234", "#1 a")])
-            .await
-            .unwrap();
+        let lone = send_selected(
+            &bin,
+            cli,
+            "r1",
+            "codex",
+            &[card("AbCd1234", "#1 a")],
+            &saved,
+        )
+        .await
+        .unwrap();
         assert_eq!(lone["name"], "trello-AbCd1234", "{lone}");
     }
 
@@ -650,7 +880,7 @@ esac
         )
         .unwrap();
         // Not even in another repo.
-        let v = send(&bin, "r1", "codex", &[card("AbCd1234", "#1 x")])
+        let v = send(&bin, "r1", "codex", &[card("AbCd1234", "#1 x")], dir.path())
             .await
             .unwrap();
         assert_eq!(
@@ -670,7 +900,7 @@ esac
         let dir = tempfile::tempdir().unwrap();
         let bin = fake_orca(dir.path());
         assert!(
-            send(&bin, "r1", "bash", &[card("AbCd1234", "#1 x")])
+            send(&bin, "r1", "bash", &[card("AbCd1234", "#1 x")], dir.path())
                 .await
                 .unwrap_err()
                 .contains("unknown agent")
@@ -678,10 +908,16 @@ esac
         assert!(logged(dir.path()).is_empty(), "nothing ran");
         for repo in ["nope", "f1"] {
             assert!(
-                send(&bin, repo, "claude", &[card("AbCd1234", "#1 x")])
-                    .await
-                    .unwrap_err()
-                    .contains("no Orca repo"),
+                send(
+                    &bin,
+                    repo,
+                    "claude",
+                    &[card("AbCd1234", "#1 x")],
+                    dir.path()
+                )
+                .await
+                .unwrap_err()
+                .contains("no Orca repo"),
                 "{repo}: folders are not git repos"
             );
         }

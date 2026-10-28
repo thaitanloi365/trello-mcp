@@ -33,6 +33,16 @@ All notable changes to this project are documented in this file.
 - Dashboard: tick cards and Copy links (one link per line) or Send selected. Several cards start a
   Claude planner in Orca that groups related cards and starts one fresh session per group (one
   worktree and pull request each) through the new `trello-mcp orca-send`.
+- Dashboard: Send to Orca starts the agent in bypass mode (`--dangerously-skip-permissions`, Codex's
+  `--dangerously-bypass-approvals-and-sandbox`), and so does the planner. A card's labels pick its
+  prompt: Snag or Bug (reproduce, root cause, regression test), Feature/Enhancement or Change
+  Request (build to the checklists, with tests), SPIKE (research only, no code or PR). Each card's
+  Orca session is saved in `orca-sessions/<short link>.json` beside the config file.
+- Dashboard: a Config tab enables projects and maps each to its Orca repos (`dashboard.json` beside
+  the config file). Only enabled projects are fetched; with none enabled, all are. The repo picker
+  lists the project's mapped repos, else those matching its name, else all.
+- Dashboard: each tab loads on its own; the project list no longer waits for Waiting on you
+  (`/api/trello` is now `/api/boards` and `/api/waiting`). Refresh reloads the open tab only.
 - `serve` runs on a current-thread runtime: an idle server uses less memory and fewer threads.
 - `get_card` file delivery keeps one file per card (`card-<id>.md`), replaced on each read, instead
   of a new timestamped file every time.

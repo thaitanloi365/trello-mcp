@@ -251,22 +251,33 @@ Log: `~/Library/Logs/trello-mcp-tray.log`. `make tray-test` runs its selftest.
 
 `trello-mcp dashboard` serves a page on http://127.0.0.1:8790 with:
 - Trello card search, by words, a card URL, or a card number in the picked project;
-- four tabs:
+- five tabs, each loading on its own; Refresh reloads the open one:
   - Waiting on you: the @mentions from the last 30 days you haven't commented after, on cards in a
     "Ready for dev", "In progress" or "Testing" list, each with a Copy comment link button;
   - Ready for dev and In progress: the cards of one project (a board in the allowed workspaces),
     loaded only when you pick it. The project, repo and agent pickers are searchable;
-  - Servers: the tray's server table.
+  - Servers: the tray's server table;
+  - Config: tick the projects to fetch and map each to its Orca repos. Only enabled projects are
+    fetched (the project picker, Waiting on you, search); with none enabled, all are. Saved in
+    `dashboard.json` beside the config file.
 
 Send to Orca, on each card in those two tabs, starts Claude, Codex or agy on the card in a new
-Orca worktree. Pick the repo once per project. The worktree is
+Orca worktree, in bypass mode (`--dangerously-skip-permissions`, or Codex's
+`--dangerously-bypass-approvals-and-sandbox`): it never stops to ask. The repo picker lists the
+project's repos from Config, else the repos matching its name (LiveLaunch: `livelaunch-*`), else
+all; pick the repo once per project. The worktree is
 `trello-<card short link>`, so a card never gets two, in any repo: a second send marks the existing
 one unread in Orca. A card already in Orca shows its repo, agent and state (`Orca: ahai_backend,
 claude · working`) and an In Orca button in place of Send to Orca, also after a reload.
 It branches from whatever the repo's main folder has checked out. The agent is told to
 read the card, make the change, run the tests, open a pull request into that branch, merge it
-itself, and remove the worktree. It stops and keeps the worktree when a step fails. Orca must be
-running; the dashboard calls `$ORCA_CLI_COMMAND`, else Orca.app's own `orca`.
+itself, and remove the worktree. It stops and keeps the worktree when a step fails. The card's
+labels pick the prompt: a Snag or Bug is reproduced, root-caused and fixed with a regression test;
+a Feature/Enhancement or Change Request is built to its checklists with tests; a SPIKE is
+researched only (findings in the terminal, no code, no pull request). Each card's session (Orca
+worktree id, terminal, repo, branch, agent) is saved in `orca-sessions/<short link>.json` beside
+the config file. Orca must be running; the dashboard calls `$ORCA_CLI_COMMAND`, else Orca.app's
+own `orca`.
 
 Every card has a tick box and a Copy button for its link. Copy links copies the ticked cards'
 links, one per line. Send selected sends the ticked cards that are not in Orca yet, together. A
@@ -275,8 +286,7 @@ main folder, reads the cards and groups those that need each other or change the
 or code; a card that depends on no other is a group of its own. For each group it runs `trello-mcp
 orca-send --repo <id> --agent <agent> <card links>`, which starts one fresh session that works
 through the group's cards in order in one worktree, `trello-<link>-<link>…`, and one pull request.
-The planner may only read cards and run `orca-send`; anything else asks you in its terminal. Its
-repo must have the Trello MCP server set up for Claude.
+The planner runs in bypass mode too. Its repo must have the Trello MCP server set up for Claude.
 
 The tray starts it from this checkout's `bin/trello-mcp`, restarts it if it dies, and opens it
 from Dashboard (⌘D).

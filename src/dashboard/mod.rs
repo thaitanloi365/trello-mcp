@@ -1,6 +1,6 @@
 //! `trello-mcp dashboard`: the tray's server table plus Trello search, the @mentions waiting on
-//! you, and one project's "Ready for dev" and "In progress" lists with Send to Orca, as a local
-//! web page. Two loopback
+//! you, one project's "Ready for dev" and "In progress" lists with Send to Orca, and a Config tab
+//! that enables projects and maps them to Orca repos, as a local web page. Two loopback
 //! listeners, as in gws-mcp: 127.0.0.1:8790 for this Mac, and with --tailscale a second one that
 //! `tailscale serve` points at, open only to the owner's Tailscale login.
 
@@ -13,6 +13,7 @@ use std::{
     collections::{HashMap, HashSet},
     future::IntoFuture,
     net::Ipv4Addr,
+    path::{Path as FsPath, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -41,7 +42,8 @@ pub(crate) const ADDR: &str = "127.0.0.1:8790";
 pub(crate) const TAILNET_ADDR: &str = "127.0.0.1:8791";
 pub(crate) const PAGE: &[u8] = include_bytes!("../../web/index.html");
 const TRELLO_TTL: Duration = Duration::from_secs(60);
-// Search, a project's lists and Send to Orca need only a load's board list: one this old will do.
+// Search, a project's lists, Waiting on you and Send to Orca need only the board list: one this
+// old will do.
 const SEARCH_TTL: Duration = Duration::from_secs(600);
 
 /// What the scans know; one scan at a time, under the lock.
@@ -52,13 +54,6 @@ struct Servers {
     stopping: HashSet<servers::ServerId>,
     #[cfg(target_os = "macos")]
     scanner: procs::Scanner,
-}
-
-struct TrelloView {
-    at: Instant,
-    /// The boards in scope: id, name, workspace.
-    boards: Arc<Vec<Value>>,
-    body: Value,
 }
 
 pub(crate) struct Dash {
@@ -73,7 +68,16 @@ pub(crate) struct Dash {
     sending: tokio::sync::Mutex<()>,
     home: String,
     servers: Mutex<Servers>,
-    trello_view: tokio::sync::Mutex<Option<TrelloView>>,
+    /// Every board you can see, enabled or not (id, name, workspace), and when it was loaded.
+    boards: tokio::sync::Mutex<Option<(Instant, Arc<Vec<Value>>)>>,
+    /// Waiting on you, when it was loaded and the boards it covers.
+    waiting: tokio::sync::Mutex<Option<(Instant, Vec<String>, Value)>>,
+    /// The Config tab's file: each project's `enabled` and Orca `repos`, by board id.
+    projects: PathBuf,
+    /// One read-modify-write of `projects` at a time.
+    saving: Mutex<()>,
+    /// One file per card with the Orca session sent to it.
+    saved: PathBuf,
 }
 
 fn now() -> f64 {
@@ -84,13 +88,14 @@ fn now() -> f64 {
 
 impl Dash {
     /// `cli` is this binary: its servers show as "installed"; `orca` is the Orca CLI.
-    /// `tailscale` is "" or host:port=login.
+    /// `tailscale` is "" or host:port=login. `dir` is the config file's folder.
     pub(crate) fn new(
         trello: Result<mcp::Server, String>,
         cli: String,
         orca: String,
         port: u16,
         tailscale: &str,
+        dir: &FsPath,
     ) -> Arc<Self> {
         let hosts: HashSet<String> =
             [format!("127.0.0.1:{port}"), format!("localhost:{port}")].into();
@@ -112,7 +117,11 @@ impl Dash {
                 .map(|h| h.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             servers: Mutex::new(Servers::default()),
-            trello_view: tokio::sync::Mutex::new(None),
+            boards: tokio::sync::Mutex::new(None),
+            waiting: tokio::sync::Mutex::new(None),
+            projects: dir.join("dashboard.json"),
+            saving: Mutex::new(()),
+            saved: sessions_dir(dir),
         })
     }
 
@@ -141,29 +150,44 @@ impl Dash {
         hdr(h, "x-trello-mcp") == "1" && (origin.is_empty() || self.origins.contains(&origin))
     }
 
-    /// The boards in scope and the page's Trello view; a cached load no older than `max_age` is
-    /// reused (`Duration::ZERO` always reloads).
-    async fn trello_view(&self, max_age: Duration) -> (Arc<Vec<Value>>, Value) {
-        let mut cache = self.trello_view.lock().await;
-        if let Some(c) = cache.as_ref().filter(|c| c.at.elapsed() < max_age) {
-            return (c.boards.clone(), c.body.clone());
+    /// Every board you can see; a cached load no older than `max_age` is reused
+    /// (`Duration::ZERO` always reloads). An error is not cached: the next load tries again.
+    async fn all_boards(&self, max_age: Duration) -> Result<Arc<Vec<Value>>, String> {
+        let mut cache = self.boards.lock().await;
+        if let Some((_, b)) = cache.as_ref().filter(|(at, _)| at.elapsed() < max_age) {
+            return Ok(b.clone());
         }
-        let (boards, body) = match &self.trello {
-            Ok(server) => load_trello(server).await,
-            Err(e) => (Vec::new(), json!({"error": e})),
-        };
-        let boards = Arc::new(boards);
-        // An error is not cached: the next load tries again.
-        *cache = (body.get("error").is_none()).then(|| TrelloView {
-            at: Instant::now(),
-            boards: boards.clone(),
-            body: body.clone(),
-        });
-        (boards, body)
+        let server = self.trello.as_ref().map_err(Clone::clone)?;
+        let v = server.list_boards("").await.map_err(|e| e.to_string())?;
+        let boards = Arc::new(
+            mcp::object_slice(&v)
+                .into_iter()
+                .map(Value::Object)
+                .collect::<Vec<_>>(),
+        );
+        *cache = Some((Instant::now(), boards.clone()));
+        Ok(boards)
+    }
+
+    /// The Config tab's settings by board id; no file is no settings.
+    fn projects(&self) -> Result<serde_json::Map<String, Value>, String> {
+        let fail = |e: String| format!("read {}: {e}", self.projects.display());
+        match std::fs::read(&self.projects) {
+            Ok(b) => serde_json::from_slice::<Value>(&b)
+                .map(|v| v["projects"].as_object().cloned().unwrap_or_default())
+                .map_err(|e| fail(e.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+            Err(e) => Err(fail(e.to_string())),
+        }
     }
 }
 
-/// The board ids of a load's board list.
+/// Where each card's Orca session is saved, beside the config file in `dir`.
+fn sessions_dir(dir: &FsPath) -> PathBuf {
+    dir.join("orca-sessions")
+}
+
+/// The board ids of a board list.
 fn ids(boards: &[Value]) -> Vec<String> {
     boards
         .iter()
@@ -171,23 +195,18 @@ fn ids(boards: &[Value]) -> Vec<String> {
         .collect()
 }
 
-/// The boards in scope and the @mentions waiting on you; no board's cards: the page loads one
-/// project at a time.
-async fn load_trello(server: &mcp::Server) -> (Vec<Value>, Value) {
-    let now = now() as i64;
-    let boards = match server.list_boards("").await {
-        Ok(v) => mcp::object_slice(&v)
-            .into_iter()
-            .map(Value::Object)
-            .collect::<Vec<_>>(),
-        Err(e) => return (Vec::new(), json!({"error": e.to_string()})),
+/// The boards in scope: the enabled ones, or all of them while none is enabled.
+fn enabled(all: &[Value], projects: &serde_json::Map<String, Value>) -> Vec<Value> {
+    let on = |b: &&Value| {
+        projects
+            .get(&mcp::nested_string(b, &["id"]))
+            .is_some_and(|p| p["enabled"] == true)
     };
-    let waiting = match server.waiting(&ids(&boards), now).await {
-        Ok(rows) => json!({"rows": rows}),
-        Err(e) => json!({"rows": [], "error": e.to_string()}),
-    };
-    let body = json!({"boards": boards, "updatedAt": now, "waiting": waiting});
-    (boards, body)
+    if all.iter().any(|b| on(&b)) {
+        all.iter().filter(on).cloned().collect()
+    } else {
+        all.to_vec()
+    }
 }
 
 /// Serves the dashboard on `addr` until SIGTERM or Ctrl-C. With `tailscale` set, a second loopback
@@ -222,7 +241,8 @@ pub(crate) async fn run(
         .and_then(|p| p.canonicalize())
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let dash = Dash::new(trello, cli, orca::cli(), port, tailscale);
+    let dir = config_dir(config_path)?;
+    let dash = Dash::new(trello, cli, orca::cli(), port, tailscale, &dir);
     // A scan a minute, so ACTIVE knows when each server last worked.
     let d = dash.clone();
     tokio::spawn(async move {
@@ -249,6 +269,12 @@ pub(crate) async fn run(
         }
     }
     Ok(())
+}
+
+/// The config file's folder: the dashboard's settings and the Orca sessions live beside it.
+fn config_dir(config_path: &str) -> Result<PathBuf> {
+    let file = config::resolve_path(config_path)?;
+    Ok(file.parent().map(FsPath::to_path_buf).unwrap_or_default())
 }
 
 /// The port of `127.0.0.1:<port>` or `localhost:<port>`: the dashboard answers on loopback only.
@@ -278,7 +304,9 @@ pub(crate) fn router(dash: Arc<Dash>, tailnet: bool) -> Router {
         )
         .route("/api/servers", get(servers_now))
         .route("/api/servers/{pid}/{start}/stop", post(stop_server))
-        .route("/api/trello", get(trello_now))
+        .route("/api/boards", get(boards_now))
+        .route("/api/waiting", get(waiting_now))
+        .route("/api/project", post(project_set))
         .route("/api/board", get(board_now))
         .route("/api/search", get(search))
         .route("/api/orca/repos", get(orca_repos))
@@ -377,30 +405,128 @@ async fn stop_server(
     StatusCode::ACCEPTED.into_response()
 }
 
-async fn trello_now(
+/// `?fresh` reloads, else a load under a minute old is reused.
+fn max_age(q: &HashMap<String, String>) -> Duration {
+    if q.contains_key("fresh") {
+        Duration::ZERO
+    } else {
+        TRELLO_TTL
+    }
+}
+
+/// Every board you can see, each with its Config settings (`enabled`, `repos`).
+async fn boards_now(
     State(dash): State<Arc<Dash>>,
     h: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    // Each load is several Trello calls on a token shared with the MCP servers: only our page may ask.
+    // Each load is a Trello call on a token shared with the MCP servers: only our page may ask.
     if !dash.is_ours(&h) {
         return http_error(StatusCode::FORBIDDEN, "forbidden");
     }
-    let max_age = if q.contains_key("fresh") {
-        Duration::ZERO
-    } else {
-        TRELLO_TTL
+    let (all, projects) = match (dash.all_boards(max_age(&q)).await, dash.projects()) {
+        (Ok(a), Ok(p)) => (a, p),
+        (Err(e), _) | (_, Err(e)) => return json_ok(&json!({"error": e})),
     };
-    json_ok(&dash.trello_view(max_age).await.1)
+    let boards: Vec<Value> = all
+        .iter()
+        .map(|b| {
+            let p = projects.get(&mcp::nested_string(b, &["id"]));
+            let mut b = b.clone();
+            b["enabled"] = json!(p.is_some_and(|p| p["enabled"] == true));
+            b["repos"] = p.map_or(json!([]), |p| p["repos"].clone());
+            b
+        })
+        .collect();
+    json_ok(&json!({"boards": boards, "updatedAt": now() as i64}))
 }
 
-/// The board list of a load, or the load's error.
-async fn scope(dash: &Dash) -> Result<Arc<Vec<Value>>, Value> {
-    let (boards, body) = dash.trello_view(SEARCH_TTL).await;
-    match body.get("error") {
-        Some(e) => Err(json!({"error": e})),
-        None => Ok(boards),
+/// The @mentions waiting on you, on the boards in scope.
+async fn waiting_now(
+    State(dash): State<Arc<Dash>>,
+    h: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !dash.is_ours(&h) {
+        return http_error(StatusCode::FORBIDDEN, "forbidden");
     }
+    let server = match &dash.trello {
+        Ok(server) => server,
+        Err(e) => return json_ok(&json!({"error": e})),
+    };
+    let scope = match scope(&dash).await {
+        Ok(b) => ids(&b),
+        Err(e) => return json_ok(&e),
+    };
+    let mut cache = dash.waiting.lock().await;
+    // A load for other boards, after a Config change, does not count.
+    if let Some((_, _, body)) = cache
+        .as_ref()
+        .filter(|(at, ids, _)| at.elapsed() < max_age(&q) && *ids == scope)
+    {
+        return json_ok(body);
+    }
+    let now = now() as i64;
+    match server.waiting(&scope, now).await {
+        Ok(rows) => {
+            let body = json!({"rows": rows, "updatedAt": now});
+            *cache = Some((Instant::now(), scope, body.clone()));
+            json_ok(&body)
+        }
+        Err(e) => json_ok(&json!({"error": e.to_string()})),
+    }
+}
+
+/// The Config tab's save (?id=<board id>&enabled=0|1&repos=<Orca repo id>,…): one project's
+/// settings, for a board you can see.
+async fn project_set(
+    State(dash): State<Arc<Dash>>,
+    h: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !dash.is_ours(&h) {
+        return http_error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let id = q.get("id").map_or("", String::as_str);
+    let all = match dash.all_boards(SEARCH_TTL).await {
+        Ok(b) => b,
+        Err(e) => return json_ok(&json!({"error": e})),
+    };
+    if !ids(&all).iter().any(|b| b == id) {
+        return http_error(StatusCode::NOT_FOUND, "no such board");
+    }
+    let repos: Vec<&str> = q
+        .get("repos")
+        .map_or("", String::as_str)
+        .split(',')
+        .filter(|r| !r.is_empty())
+        .collect();
+    let project = json!({"enabled": q.get("enabled").is_some_and(|e| e == "1"), "repos": repos});
+    let _one = dash.saving.lock().unwrap();
+    let mut projects = match dash.projects() {
+        Ok(p) => p,
+        Err(e) => return json_ok(&json!({"error": e})),
+    };
+    projects.insert(id.into(), project.clone());
+    let data = json!({"projects": projects}).to_string();
+    if let Err(e) = std::fs::create_dir_all(dash.projects.parent().unwrap_or(FsPath::new(".")))
+        .and_then(|_| {
+            crate::util::write_atomic(&dash.projects, data.as_bytes(), 0o600, ".dashboard")
+        })
+    {
+        return json_ok(&json!({"error": format!("save {}: {e}", dash.projects.display())}));
+    }
+    json_ok(&project)
+}
+
+/// The boards in scope (enabled in Config, or all while none is), or the load's error.
+async fn scope(dash: &Dash) -> Result<Vec<Value>, Value> {
+    let all = dash
+        .all_boards(SEARCH_TTL)
+        .await
+        .map_err(|e| json!({"error": e}))?;
+    let projects = dash.projects().map_err(|e| json!({"error": e}))?;
+    Ok(enabled(&all, &projects))
 }
 
 /// One project's "Ready for dev" and "In progress" cards.
@@ -490,16 +616,18 @@ async fn orca_sessions(State(dash): State<Arc<Dash>>, h: HeaderMap) -> Response 
     }
 }
 
-/// A card as Orca names it: its short link and `#<number> <name>`.
-fn card_ref(card: &Value) -> (String, String) {
-    (
-        mcp::nested_string(card, &["shortLink"]),
-        format!(
+/// A card as Orca gets it: its short link, `#<number> <name>`, and its kind from its labels.
+fn card_ref(card: &Value) -> orca::Card {
+    let labels = card["labels"].as_array().into_iter().flatten();
+    orca::Card {
+        link: mcp::nested_string(card, &["shortLink"]),
+        title: format!(
             "#{} {}",
             card["idShort"],
             mcp::nested_string(card, &["name"])
         ),
-    )
+        kind: orca::Kind::of(labels.filter_map(|l| l["name"].as_str())),
+    }
 }
 
 /// The open card behind `url`, on a board in `boards`.
@@ -507,7 +635,7 @@ async fn scoped_card(
     server: &mcp::Server,
     boards: &[Value],
     url: &str,
-) -> Result<(String, String), Box<Response>> {
+) -> Result<orca::Card, Box<Response>> {
     let Ok(feeds::Query::Link(link)) = feeds::classify(url) else {
         return Err(Box::new(http_error(
             StatusCode::BAD_REQUEST,
@@ -572,9 +700,17 @@ async fn orca_send(
     }
     let _one = dash.sending.lock().await;
     let sent = if q.contains_key("cards") {
-        orca::send_selected(&dash.orca, &dash.cli, get("repo"), get("agent"), &cards).await
+        orca::send_selected(
+            &dash.orca,
+            &dash.cli,
+            get("repo"),
+            get("agent"),
+            &cards,
+            &dash.saved,
+        )
+        .await
     } else {
-        orca::send(&dash.orca, get("repo"), get("agent"), &cards).await
+        orca::send(&dash.orca, get("repo"), get("agent"), &cards, &dash.saved).await
     };
     match sent {
         Ok(v) => json_ok(&v),
@@ -605,7 +741,8 @@ pub(crate) async fn send_cards(
             .ok_or_else(|| anyhow!("{url}: no such open card"))?;
         group.push(card_ref(&card));
     }
-    orca::send(&orca::cli(), repo, agent, &group)
+    let saved = sessions_dir(&config_dir(config_path)?);
+    orca::send(&orca::cli(), repo, agent, &group, &saved)
         .await
         .map_err(|e| anyhow!(e))
 }
@@ -653,7 +790,15 @@ mod tests {
     ) -> (String, String) {
         let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = local.local_addr().unwrap().port();
-        let dash = Dash::new(trello, "/x/trello-mcp".into(), orca.into(), port, tailscale);
+        let dir = tempfile::tempdir().unwrap().keep();
+        let dash = Dash::new(
+            trello,
+            "/x/trello-mcp".into(),
+            orca.into(),
+            port,
+            tailscale,
+            &dir,
+        );
         let ts = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let ts_base = format!("127.0.0.1:{}", ts.local_addr().unwrap().port());
         let (a, b) = (router(dash.clone(), false), router(dash, true));
@@ -833,10 +978,13 @@ mod tests {
         } else {
             assert_eq!(v, json!({"unsupported": true}));
         }
-        assert_eq!(
-            get_json(&us, "/api/trello").await,
-            json!({"error": "read config: api_key is required"})
-        );
+        for path in ["/api/boards", "/api/waiting"] {
+            assert_eq!(
+                get_json(&us, path).await,
+                json!({"error": "read config: api_key is required"}),
+                "{path}"
+            );
+        }
         let long = format!("/api/search?q={}", "a".repeat(201));
         assert_eq!(
             call(&us, "GET", &long, &[("Host", &us), ("X-Trello-MCP", "1")])
@@ -862,7 +1010,12 @@ mod tests {
                 json_response(json!([feeds::tests::mention("a1", "c1", 60, "@me hi")]))
             }
             "/members/me/actions" => json_response(json!([])),
-            "/cards/c1" | "/cards/aaaa1111" => json_response(feeds::tests::in_context("c1")),
+            "/cards/c1" => json_response(feeds::tests::in_context("c1")),
+            "/cards/aaaa1111" => {
+                let mut c = feeds::tests::in_context("c1");
+                c["labels"] = json!([{"name": "UI/UX"}, {"name": "Snag"}]);
+                json_response(c)
+            }
             "/cards/bbbb2222" => json_response(feeds::tests::in_context("c2")),
             _ => not_found(),
         })
@@ -870,30 +1023,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trello_view_loads_no_board_until_one_is_picked() {
+    async fn boards_and_waiting_load_apart_and_no_board_until_one_is_picked() {
         let h = two_boards().await;
         let (us, _) = start(Ok(h.server.clone()), "").await;
-        let v = get_json(&us, "/api/trello").await;
+        let v = get_json(&us, "/api/boards").await;
         assert_eq!(
             v["boards"],
-            json!([{"id": "b1", "name": "Client Portal"}, {"id": "b2", "name": "Gone Board"}])
+            json!([{"id": "b1", "name": "Client Portal", "enabled": false, "repos": []},
+                {"id": "b2", "name": "Gone Board", "enabled": false, "repos": []}])
         );
         assert!(v["updatedAt"].as_i64().unwrap() > 1_700_000_000);
-        assert_eq!(v["waiting"]["rows"][0]["number"], 348, "{v}");
+        assert_eq!(
+            calls(&h.api).await,
+            ["GET /members/me/boards"],
+            "the board list alone"
+        );
+        let w = get_json(&us, "/api/waiting").await;
+        assert_eq!(w["rows"][0]["number"], 348, "{w}");
         assert!(
             !calls(&h.api).await.iter().any(|c| c.contains("/boards/")),
             "no board's cards: {:?}",
             calls(&h.api).await
         );
         let n = calls(&h.api).await.len();
-        get_json(&us, "/api/trello").await;
+        get_json(&us, "/api/boards").await;
+        get_json(&us, "/api/waiting").await;
         assert_eq!(
             calls(&h.api).await.len(),
             n,
             "a second load within a minute comes from the cache"
         );
-        get_json(&us, "/api/trello?fresh=1").await;
-        assert!(calls(&h.api).await.len() > n, "Refresh refetches");
+        get_json(&us, "/api/boards?fresh=1").await;
+        assert_eq!(calls(&h.api).await.len(), n + 1, "Refresh refetches");
+        get_json(&us, "/api/waiting?fresh=1").await;
+        assert!(calls(&h.api).await.len() > n + 1, "Refresh refetches");
 
         let b = get_json(&us, "/api/board?id=b1").await;
         assert_eq!(b["progress"]["boards"][0]["cards"][0]["number"], 348, "{b}");
@@ -926,6 +1089,60 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("Pick a project")
+        );
+    }
+
+    #[tokio::test]
+    async fn enabled_projects_are_the_only_ones_fetched() {
+        let h = two_boards().await;
+        let (us, _) = start(Ok(h.server.clone()), "").await;
+        let hdrs = ours(&us, &format!("http://{us}"));
+        let mine: Vec<(&str, &str)> = hdrs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        assert_eq!(
+            get_json(&us, "/api/waiting").await["rows"][0]["number"],
+            348
+        );
+        assert_eq!(
+            call(&us, "POST", "/api/project?id=elsewhere&enabled=1", &mine)
+                .await
+                .0,
+            404
+        );
+        let (status, raw) = call(
+            &us,
+            "POST",
+            "/api/project?id=b2&enabled=1&repos=r1,r2",
+            &mine,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(
+            serde_json::from_str::<Value>(body(&raw)).unwrap(),
+            json!({"enabled": true, "repos": ["r1", "r2"]})
+        );
+        let v = get_json(&us, "/api/boards").await;
+        assert_eq!(
+            (&v["boards"][0]["enabled"], &v["boards"][1]),
+            (
+                &json!(false),
+                &json!({"id": "b2", "name": "Gone Board", "enabled": true, "repos": ["r1", "r2"]})
+            ),
+            "every board still lists, for the Config tab"
+        );
+        // b1 is now out of scope: its mention and its cards are not fetched.
+        assert_eq!(get_json(&us, "/api/waiting").await["rows"], json!([]));
+        let hdrs = [("Host", us.as_str()), ("X-Trello-MCP", "1")];
+        assert_eq!(call(&us, "GET", "/api/board?id=b1", &hdrs).await.0, 404);
+        // Turning the last one off brings every board back.
+        call(&us, "POST", "/api/project?id=b2&enabled=0&repos=r1", &mine).await;
+        assert_eq!(
+            get_json(&us, "/api/waiting").await["rows"][0]["number"],
+            348
+        );
+        assert_eq!(
+            get_json(&us, "/api/boards").await["boards"][1]["repos"],
+            json!(["r1"]),
+            "a disabled project keeps its repos"
         );
     }
 
@@ -1006,6 +1223,12 @@ mod tests {
         for path in ["/api/orca/repos", "/api/orca/sessions"] {
             assert_eq!(call(&us, "GET", path, &mine[..1]).await.0, 403, "{path}");
         }
+        assert_eq!(
+            call(&us, "POST", "/api/project?id=b1&enabled=1", &mine[..1])
+                .await
+                .0,
+            403
+        );
     }
 
     #[tokio::test]
@@ -1035,6 +1258,14 @@ mod tests {
             set.contains(&"#348 Block physical address".to_string()),
             "{set:?}"
         );
+        let agent = calls
+            .iter()
+            .find(|c| c[..2] == ["terminal", "create"])
+            .unwrap();
+        assert!(
+            agent.iter().any(|a| a.starts_with("codex --dangerously-bypass-approvals-and-sandbox 'Fix the Trello card https://trello.com/c/aaaa1111 . It is a snag")),
+            "the card's Snag label picks the prompt: {agent:?}"
+        );
         let repos = get_json(&us, "/api/orca/repos").await;
         assert_eq!(repos["repos"].as_array().unwrap().len(), 1, "{repos}");
         let sessions = get_json(&us, "/api/orca/sessions").await;
@@ -1047,6 +1278,7 @@ mod tests {
         let calls = orca::tests::logged(dir.path());
         let term = calls
             .iter()
+            .rev()
             .find(|c| c[..2] == ["terminal", "create"])
             .unwrap();
         assert!(
@@ -1061,8 +1293,9 @@ mod tests {
         let h = test_server(&[], |_| not_found()).await;
         let (us, _) = start(Ok(h.server.clone()), "").await;
         for path in [
-            "/api/trello",
-            "/api/trello?fresh=1",
+            "/api/boards",
+            "/api/boards?fresh=1",
+            "/api/waiting",
             "/api/search?q=x",
             "/api/board?id=b1",
         ] {
@@ -1110,7 +1343,9 @@ mod tests {
         }
         for wired in [
             "/api/servers",
-            "/api/trello",
+            "/api/boards",
+            "/api/waiting",
+            "/api/project",
             "/api/board",
             "/api/search",
             "/api/orca/repos",
