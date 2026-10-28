@@ -250,13 +250,13 @@ Log: `~/Library/Logs/trello-mcp-tray.log`. `make tray-test` runs its selftest.
 ### Dashboard
 
 `trello-mcp dashboard` serves a page on http://127.0.0.1:8790 with:
-- the tray's server table;
 - Trello card search, by words, a card URL, or a card number in the picked project;
-- three tabs:
+- four tabs:
   - Waiting on you: the @mentions from the last 30 days you haven't commented after, on cards in a
     "Ready for dev", "In progress" or "Testing" list, each with a Copy comment link button;
   - Ready for dev and In progress: the cards of one project (a board in the allowed workspaces),
-    loaded only when you pick it.
+    loaded only when you pick it. The project, repo and agent pickers are searchable;
+  - Servers: the tray's server table.
 
 Send to Orca, on each card in those two tabs, starts Claude, Codex or agy on the card in a new
 Orca worktree. Pick the repo once per project. The worktree is

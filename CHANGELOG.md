@@ -24,6 +24,9 @@ All notable changes to this project are documented in this file.
   2 plus one per mentioned card). The lists load one picked project at a time; a card number
   searches that project. Send to Orca starts Claude, Codex or agy on a card in its own Orca
   worktree, which opens a PR into the branch it came from, merges it and cleans up.
+- Dashboard: the project, repo and agent pickers are searchable (type to filter, arrow keys and
+  Enter to pick). Servers is a fourth tab. Each tab shows a skeleton of its rows while it loads,
+  on the first load and on Refresh; the 5-minute reload swaps the data in place.
 - `serve` runs on a current-thread runtime: an idle server uses less memory and fewer threads.
 
 ## [2.0.0] - 2026-10-12
