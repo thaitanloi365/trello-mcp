@@ -260,11 +260,23 @@ Log: `~/Library/Logs/trello-mcp-tray.log`. `make tray-test` runs its selftest.
 
 Send to Orca, on each card in those two tabs, starts Claude, Codex or agy on the card in a new
 Orca worktree. Pick the repo once per project. The worktree is
-`trello-<card short link>`, so a card never gets two: a second send marks the existing one unread
-in Orca. It branches from whatever the repo's main folder has checked out. The agent is told to
+`trello-<card short link>`, so a card never gets two, in any repo: a second send marks the existing
+one unread in Orca. A card already in Orca shows its repo, agent and state (`Orca: ahai_backend,
+claude · working`) and an In Orca button in place of Send to Orca, also after a reload.
+It branches from whatever the repo's main folder has checked out. The agent is told to
 read the card, make the change, run the tests, open a pull request into that branch, merge it
 itself, and remove the worktree. It stops and keeps the worktree when a step fails. Orca must be
 running; the dashboard calls `$ORCA_CLI_COMMAND`, else Orca.app's own `orca`.
+
+Every card has a tick box and a Copy button for its link. Copy links copies the ticked cards'
+links, one per line. Send selected sends the ticked cards that are not in Orca yet, together. A
+lone card goes as Send to Orca does. Several start a planner: Claude, in a terminal in the repo's
+main folder, reads the cards and groups those that need each other or change the same screens, data
+or code; a card that depends on no other is a group of its own. For each group it runs `trello-mcp
+orca-send --repo <id> --agent <agent> <card links>`, which starts one fresh session that works
+through the group's cards in order in one worktree, `trello-<link>-<link>…`, and one pull request.
+The planner may only read cards and run `orca-send`; anything else asks you in its terminal. Its
+repo must have the Trello MCP server set up for Claude.
 
 The tray starts it from this checkout's `bin/trello-mcp`, restarts it if it dies, and opens it
 from Dashboard (⌘D).

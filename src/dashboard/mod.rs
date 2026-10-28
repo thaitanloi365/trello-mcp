@@ -282,6 +282,7 @@ pub(crate) fn router(dash: Arc<Dash>, tailnet: bool) -> Router {
         .route("/api/board", get(board_now))
         .route("/api/search", get(search))
         .route("/api/orca/repos", get(orca_repos))
+        .route("/api/orca/sessions", get(orca_sessions))
         .route("/api/orca/send", post(orca_send))
         .fallback(|| async { http_error(StatusCode::NOT_FOUND, "404 page not found") })
         .layer(middleware::from_fn_with_state(
@@ -478,8 +479,54 @@ async fn orca_repos(State(dash): State<Arc<Dash>>, h: HeaderMap) -> Response {
     }
 }
 
+/// The cards an agent is on in Orca, so the page shows them and not Send to Orca.
+async fn orca_sessions(State(dash): State<Arc<Dash>>, h: HeaderMap) -> Response {
+    if !dash.is_ours(&h) {
+        return http_error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    match orca::sessions(&dash.orca).await {
+        Ok(sessions) => json_ok(&json!({"sessions": sessions})),
+        Err(e) => json_ok(&json!({"error": e})),
+    }
+}
+
+/// A card as Orca names it: its short link and `#<number> <name>`.
+fn card_ref(card: &Value) -> (String, String) {
+    (
+        mcp::nested_string(card, &["shortLink"]),
+        format!(
+            "#{} {}",
+            card["idShort"],
+            mcp::nested_string(card, &["name"])
+        ),
+    )
+}
+
+/// The open card behind `url`, on a board in `boards`.
+async fn scoped_card(
+    server: &mcp::Server,
+    boards: &[Value],
+    url: &str,
+) -> Result<(String, String), Box<Response>> {
+    let Ok(feeds::Query::Link(link)) = feeds::classify(url) else {
+        return Err(Box::new(http_error(
+            StatusCode::BAD_REQUEST,
+            "card must be a Trello card link",
+        )));
+    };
+    match server.card_in_context(&link).await {
+        Ok(Some(c)) if ids(boards).contains(&mcp::nested_string(&c, &["idBoard"])) => {
+            Ok(card_ref(&c))
+        }
+        Ok(_) => Err(Box::new(http_error(StatusCode::NOT_FOUND, "no such card"))),
+        Err(e) => Err(Box::new(json_ok(&json!({"error": e.to_string()})))),
+    }
+}
+
 /// Send to Orca (?card=<card link>&repo=<Orca repo id>&agent=claude|codex|agy): starts an agent
-/// on the card in its own worktree. Only our page, only an open card on a board in scope.
+/// on the card in its own worktree. Send selected (?cards=<link>,<link>…&repo&agent): the same
+/// for a lone card; several go to a planner that groups them and sends each group. Only our page,
+/// only open cards on boards in scope.
 async fn orca_send(
     State(dash): State<Arc<Dash>>,
     h: HeaderMap,
@@ -489,9 +536,19 @@ async fn orca_send(
         return http_error(StatusCode::FORBIDDEN, "forbidden");
     }
     let get = |k: &str| q.get(k).map_or("", String::as_str);
-    let Ok(feeds::Query::Link(link)) = feeds::classify(get("card")) else {
-        return http_error(StatusCode::BAD_REQUEST, "card must be a Trello card link");
+    let urls: Vec<&str> = match q.get("cards") {
+        Some(cards) => cards.split(',').filter(|c| !c.is_empty()).collect(),
+        None => vec![get("card")],
     };
+    if urls.is_empty() {
+        return http_error(StatusCode::BAD_REQUEST, "pick a card");
+    }
+    if urls
+        .iter()
+        .any(|u| !matches!(feeds::classify(u), Ok(feeds::Query::Link(_))))
+    {
+        return http_error(StatusCode::BAD_REQUEST, "card must be a Trello card link");
+    }
     if !orca::AGENTS.iter().any(|(a, _)| *a == get("agent")) {
         return http_error(
             StatusCode::BAD_REQUEST,
@@ -506,29 +563,51 @@ async fn orca_send(
         Ok(b) => b,
         Err(e) => return json_ok(&e),
     };
-    let card = match server.card_in_context(&link).await {
-        Ok(Some(c)) if ids(&boards).contains(&mcp::nested_string(&c, &["idBoard"])) => c,
-        Ok(_) => return http_error(StatusCode::NOT_FOUND, "no such card"),
-        Err(e) => return json_ok(&json!({"error": e.to_string()})),
-    };
-    let title = format!(
-        "#{} {}",
-        card["idShort"],
-        mcp::nested_string(&card, &["name"])
-    );
+    let mut cards = Vec::new();
+    for url in urls {
+        match scoped_card(server, &boards, url).await {
+            Ok(c) => cards.push(c),
+            Err(r) => return *r,
+        }
+    }
     let _one = dash.sending.lock().await;
-    match orca::send(
-        &dash.orca,
-        get("repo"),
-        get("agent"),
-        &mcp::nested_string(&card, &["shortLink"]),
-        &title,
-    )
-    .await
-    {
+    let sent = if q.contains_key("cards") {
+        orca::send_selected(&dash.orca, &dash.cli, get("repo"), get("agent"), &cards).await
+    } else {
+        orca::send(&dash.orca, get("repo"), get("agent"), &cards).await
+    };
+    match sent {
         Ok(v) => json_ok(&v),
         Err(e) => json_ok(&json!({"error": e})),
     }
+}
+
+/// `trello-mcp orca-send`, what the planner runs for each group: Send to Orca for `cards` (links,
+/// in the order to build them), within the MCP server's workspace allow-list.
+pub(crate) async fn send_cards(
+    config_path: &str,
+    repo: &str,
+    agent: &str,
+    cards: &[String],
+) -> Result<Value> {
+    let server = mcp::Server::new(Arc::new(trello::Client::new(Arc::new(
+        config::Manager::new(config_path)?,
+    ))));
+    let mut group = Vec::new();
+    for url in cards {
+        let Ok(feeds::Query::Link(link)) = feeds::classify(url) else {
+            bail!("{url}: not a Trello card link");
+        };
+        server.ensure_card_allowed(&link).await?;
+        let card = server
+            .card_in_context(&link)
+            .await?
+            .ok_or_else(|| anyhow!("{url}: no such open card"))?;
+        group.push(card_ref(&card));
+    }
+    orca::send(&orca::cli(), repo, agent, &group)
+        .await
+        .map_err(|e| anyhow!(e))
 }
 
 fn json_ok(v: &Value) -> Response {
@@ -784,6 +863,7 @@ mod tests {
             }
             "/members/me/actions" => json_response(json!([])),
             "/cards/c1" | "/cards/aaaa1111" => json_response(feeds::tests::in_context("c1")),
+            "/cards/bbbb2222" => json_response(feeds::tests::in_context("c2")),
             _ => not_found(),
         })
         .await
@@ -904,7 +984,28 @@ mod tests {
                 .0,
             404
         );
-        assert_eq!(call(&us, "GET", "/api/orca/repos", &mine[..1]).await.0, 403);
+        // Send selected checks every card before Orca.
+        let picked = "/api/orca/send?repo=r1&agent=codex&cards=";
+        let aaaa = "https%3A%2F%2Ftrello.com%2Fc%2Faaaa1111";
+        for (cards, status) in [
+            (String::new(), 400),
+            (format!("{aaaa},hello"), 400),
+            (
+                format!("{aaaa},https%3A%2F%2Ftrello.com%2Fc%2Fzzzz9999"),
+                404,
+            ),
+        ] {
+            assert_eq!(
+                call(&us, "POST", &format!("{picked}{cards}"), &mine)
+                    .await
+                    .0,
+                status,
+                "{cards}"
+            );
+        }
+        for path in ["/api/orca/repos", "/api/orca/sessions"] {
+            assert_eq!(call(&us, "GET", path, &mine[..1]).await.0, 403, "{path}");
+        }
     }
 
     #[tokio::test]
@@ -936,6 +1037,23 @@ mod tests {
         );
         let repos = get_json(&us, "/api/orca/repos").await;
         assert_eq!(repos["repos"].as_array().unwrap().len(), 1, "{repos}");
+        let sessions = get_json(&us, "/api/orca/sessions").await;
+        assert_eq!(sessions, json!({"sessions": []}));
+        let picked = "/api/orca/send?repo=r1&agent=codex&cards=https%3A%2F%2Ftrello.com%2Fc%2Faaaa1111,https%3A%2F%2Ftrello.com%2Fc%2Fbbbb2222";
+        let (status, raw) = call(&us, "POST", picked, &mine).await;
+        assert_eq!(status, 200);
+        let v: Value = serde_json::from_str(body(&raw)).unwrap();
+        assert_eq!(v, json!({"planned": true, "cards": 2, "repo": "app"}));
+        let calls = orca::tests::logged(dir.path());
+        let term = calls
+            .iter()
+            .find(|c| c[..2] == ["terminal", "create"])
+            .unwrap();
+        assert!(
+            term.iter()
+                .any(|a| a.contains("/x/trello-mcp orca-send --repo r1 --agent codex")),
+            "{term:?}"
+        );
     }
 
     #[tokio::test]
@@ -996,6 +1114,7 @@ mod tests {
             "/api/board",
             "/api/search",
             "/api/orca/repos",
+            "/api/orca/sessions",
             "/api/orca/send",
             "X-Trello-MCP",
             "open-groups",

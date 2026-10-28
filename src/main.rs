@@ -50,6 +50,18 @@ enum Command {
         #[arg(long, default_value = "")]
         tailscale: String,
     },
+    /// Send Trello cards to Orca as one agent session, in the order given (the planner's tool)
+    OrcaSend {
+        /// Orca repo id
+        #[arg(long)]
+        repo: String,
+        /// claude, codex or agy
+        #[arg(long)]
+        agent: String,
+        /// card links
+        #[arg(required = true)]
+        cards: Vec<String>,
+    },
     /// Create, edit, show, and validate persistent configuration
     Config {
         #[command(subcommand)]
@@ -198,6 +210,13 @@ fn run(
             tailnet_addr,
             tailscale,
         }) => run_dashboard(&config_path, &addr, &tailnet_addr, &tailscale),
+        Some(Command::OrcaSend { repo, agent, cards }) => {
+            let sent = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(dashboard::send_cards(&config_path, &repo, &agent, &cards))?;
+            Ok(writeln!(stdout, "{sent}")?)
+        }
         Some(Command::Version) => Ok(writeln!(stdout, "{}", version::CURRENT)?),
         Some(Command::Config { command }) => run_config(command, &config_path, stdout, stderr),
         Some(Command::ClientConfig { client, command }) => {

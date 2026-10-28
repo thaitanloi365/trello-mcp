@@ -59,6 +59,8 @@ h1 { display: flex; align-items: center; gap: 14px; font-size: 40px; line-height
 .quote { margin: 0; font-size: 14px; border-left: 3px solid var(--ink); padding-left: 10px; overflow-wrap: anywhere; }
 .quote .small { display: block; margin-top: 2px; }
 .acts { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.acts .pick { width: 20px; height: 20px; margin: 0; align-self: center; accent-color: var(--red); cursor: pointer; }
+@media (pointer: coarse) { .acts .pick { width: 28px; height: 28px; } }
 
 /* Loading: bars in the shape of the rows to come. */
 .sk { display: block; margin: 3px 0; max-width: 100%; background: var(--hair); animation: pulse 1.5s ease-in-out infinite; }
@@ -179,6 +181,8 @@ button.sg { width: 100%; min-height: 40px; padding: 0; font: inherit; font-size:
       <div class="field"><span class="label" id="board-label">Project</span><select id="board" hidden disabled><option value="">Pick a project</option></select></div>
       <div class="field"><span class="label" id="repo-label">Repo for Send to Orca</span><select id="repo" hidden disabled><option value="">Pick a repo</option></select></div>
       <div class="field narrow"><span class="label" id="agent-label">Agent</span><select id="agent" hidden><option value="claude">Claude</option><option value="codex">Codex</option><option value="agy">agy</option></select></div>
+      <button class="btn" id="copy-picked" type="button" disabled>Copy links</button>
+      <button class="btn primary" id="send-picked" type="button" disabled>Send selected</button>
     </div>
     <div class="status" id="orca-status" aria-live="polite"></div>
     <div id="ready"></div>
@@ -466,26 +470,32 @@ function combo(sel, noun) {
 const boardBox = combo($('board'), 'project'), repoBox = combo($('repo'), 'repo'), agentBox = combo($('agent'), 'agent');
 const board = () => $('board').value;
 function orcaStatus(text, failed) { $('orca-status').replaceChildren(failed ? errorBox(text) : el('span', '', text)); }
-function sendBtn(c) {
-  const b = el('button', 'btn sm primary', 'Send to Orca');
+async function postJSON(url) {
+  const r = await fetch(url, { method: 'POST', headers: { 'X-Trello-MCP': '1' } });
+  if (!r.ok) throw new Error((await r.text()).trim() || `HTTP ${r.status}`);
+  const d = await r.json();
+  if (d.error) throw new Error(d.error);
+  return d;
+}
+// A card already in Orca (`s`, its session) shows In Orca: a send only marks it unread there.
+function sendBtn(c, s) {
+  const label = s ? 'In Orca' : 'Send to Orca';
+  const b = el('button', s ? 'btn sm' : 'btn sm primary', label);
   b.type = 'button';
+  if (s) b.title = `${s.name}: mark it unread in Orca`;
   b.addEventListener('click', async () => {
     const repo = $('repo').value, agent = $('agent').value;
-    if (!repo) { orcaStatus('Pick the repo for this project first.', true); repoBox.btn.focus(); return; }
+    if (!repo && !s) { orcaStatus('Pick the repo for this project first.', true); repoBox.btn.focus(); return; }
     b.disabled = true;
     b.textContent = 'Sending…';
     try {
-      const q = new URLSearchParams({ card: c.url, repo, agent });
-      const r = await fetch('/api/orca/send?' + q, { method: 'POST', headers: { 'X-Trello-MCP': '1' } });
-      if (!r.ok) throw new Error((await r.text()).trim() || `HTTP ${r.status}`);
-      const d = await r.json();
-      if (d.error) throw new Error(d.error);
+      const d = await postJSON('/api/orca/send?' + new URLSearchParams({ card: c.url, repo, agent }));
       b.textContent = d.existing ? 'In Orca' : 'Sent';
       orcaStatus(d.existing
-        ? `${number(c)} already has ${d.name}: marked unread in Orca.`
+        ? `${number(c)} already has ${d.name} in ${d.repo}: marked unread in Orca.`
         : `${agent} is on ${number(c)} in ${d.name}, from ${d.base}.`);
     } catch (e) {
-      b.textContent = 'Send to Orca';
+      b.textContent = label;
       b.disabled = false;
       orcaStatus(`${number(c)}: ${e.message}`, true);
     }
@@ -493,7 +503,48 @@ function sendBtn(c) {
   return b;
 }
 
-function renderLists(id, section, name) {
+// Copy links and Send selected: the picked cards' links. Send selected skips the cards in Orca.
+const picked = new Set(), inOrcaCards = new Set();
+const toSend = () => [...picked].filter(u => !inOrcaCards.has(u));
+function syncPicked() {
+  const n = toSend().length, skip = picked.size - n;
+  $('copy-picked').disabled = !picked.size;
+  $('send-picked').disabled = !n;
+  $('send-picked').textContent = n ? `Send selected (${n})` : 'Send selected';
+  $('send-picked').title = skip ? `${plural(skip, 'picked card')} already in Orca, not sent` : '';
+}
+function pickBox(c) {
+  const box = el('input', 'pick');
+  box.type = 'checkbox';
+  box.checked = picked.has(c.url);
+  box.setAttribute('aria-label', `Pick ${number(c)}`);
+  box.addEventListener('change', () => { if (box.checked) picked.add(c.url); else picked.delete(c.url); syncPicked(); });
+  return box;
+}
+// One link per line, so a paste puts each card on its own line.
+$('copy-picked').addEventListener('click', () => copy($('copy-picked'), [...picked].join('\n')));
+$('send-picked').addEventListener('click', async () => {
+  const b = $('send-picked'), repo = $('repo').value, agent = $('agent').value;
+  if (!repo) { orcaStatus('Pick the repo for this project first.', true); repoBox.btn.focus(); return; }
+  b.disabled = true;
+  b.textContent = 'Sending…';
+  try {
+    const d = await postJSON('/api/orca/send?' + new URLSearchParams({ cards: toSend().join(','), repo, agent }));
+    picked.clear();
+    orcaStatus(d.planned
+      ? `Claude is grouping ${plural(d.cards, 'card')} in ${d.repo}: it starts one ${agent} session per group in Orca.`
+      : `${agent} is on it in ${d.name}, from ${d.base}.`);
+    loadBoard(true);
+  } catch (e) {
+    orcaStatus(e.message, true);
+  }
+  syncPicked();
+});
+
+const inOrca = s => `Orca: ${s.repo}, ${join(s.agent, s.state)}`;
+// `sessions`: each card in Orca by its short link, lowercased (Orca may lowercase it); `shown`
+// collects every card's link.
+function renderLists(id, section, name, sessions, shown) {
   const boards = section.boards || [];
   $(id + '-n').textContent = boards.reduce((n, b) => n + b.cards.length, 0) || '';
   const out = section.error ? [errorBox(section.error)] : [];
@@ -502,7 +553,13 @@ function renderLists(id, section, name) {
     const head = el('div', 'board');
     head.append(link('', b.board, b.url), el('span', '', String(b.cards.length)));
     out.push(head);
-    for (const c of b.cards) out.push(cardRow(c, join(members(c), activity(c)), [sendBtn(c), copyBtn('Copy', c.url)]));
+    for (const c of b.cards) {
+      const s = sessions.get(c.url.split('/').pop().toLowerCase());
+      shown.add(c.url);
+      if (s) inOrcaCards.add(c.url);
+      const acts = [pickBox(c), sendBtn(c, s), copyBtn('Copy', c.url)];
+      out.push(cardRow(c, join(members(c), activity(c), s && inOrca(s)), acts));
+    }
   }
   $(id).replaceChildren(...out);
 }
@@ -518,11 +575,20 @@ async function loadBoard(quiet) {
   if (!id) { listsMessage(el('p', 'empty', 'Pick a project to see its cards.')); return; }
   if (!quiet) listsMessage(listsBones());
   try {
-    const d = await getJSON('/api/board?id=' + encodeURIComponent(id));
+    // With Orca down the cards still show, without their sessions.
+    const [d, o] = await Promise.all([
+      getJSON('/api/board?id=' + encodeURIComponent(id)),
+      getJSON('/api/orca/sessions').catch(() => ({})),
+    ]);
     if (seq !== boardSeq) return;
     if (d.error) throw new Error(d.error);
-    renderLists('ready', d.ready, 'Ready for dev');
-    renderLists('progress', d.progress, 'In progress');
+    const sessions = new Map((o.sessions || []).map(s => [s.card, s]));
+    const shown = new Set();
+    inOrcaCards.clear();
+    renderLists('ready', d.ready, 'Ready for dev', sessions, shown);
+    renderLists('progress', d.progress, 'In progress', sessions, shown);
+    for (const u of picked) if (!shown.has(u)) picked.delete(u);
+    syncPicked();
   } catch (e) {
     if (seq === boardSeq) listsMessage(errorBox(e.message));
   }
@@ -565,7 +631,7 @@ async function loadRepos() {
   }
   pickRepo();
 }
-$('board').addEventListener('change', () => { store.set('board', board()); $('orca-status').replaceChildren(); pickRepo(); loadBoard(); });
+$('board').addEventListener('change', () => { store.set('board', board()); $('orca-status').replaceChildren(); picked.clear(); syncPicked(); pickRepo(); loadBoard(); });
 $('repo').addEventListener('change', () => { if (board()) store.set('repo:' + board(), $('repo').value); });
 $('agent').value = store.get('agent') || 'claude';
 if ($('agent').selectedIndex < 0) $('agent').value = 'claude';

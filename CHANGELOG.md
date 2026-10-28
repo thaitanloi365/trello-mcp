@@ -27,6 +27,12 @@ All notable changes to this project are documented in this file.
 - Dashboard: the project, repo and agent pickers are searchable (type to filter, arrow keys and
   Enter to pick). Servers is a fourth tab. Each tab shows a skeleton of its rows while it loads,
   on the first load and on Refresh; the 5-minute reload swaps the data in place.
+- Dashboard: a card already sent to Orca shows its repo, agent and state and an In Orca button,
+  also after a reload (Orca's `worktree ps`). Send to Orca refuses a card's second worktree in any
+  repo, not only the picked one.
+- Dashboard: tick cards and Copy links (one link per line) or Send selected. Several cards start a
+  Claude planner in Orca that groups related cards and starts one fresh session per group (one
+  worktree and pull request each) through the new `trello-mcp orca-send`.
 - `serve` runs on a current-thread runtime: an idle server uses less memory and fewer threads.
 
 ## [2.0.0] - 2026-10-12
