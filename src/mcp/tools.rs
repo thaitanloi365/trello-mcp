@@ -483,7 +483,9 @@ fn tool_definitions() -> Vec<ToolDefinition> {
         tool(
             "add_attachment",
             false,
-            "Attach a link, a local file, or base64 data to a card; give exactly one of url, filePath, or data",
+            approved(
+                "Attach a link, a local file, or base64 data to a card; give exactly one of url, filePath, or data",
+            ),
             vec![
                 required("cardId", Str, CARD_REF),
                 optional("url", Str, "Link or image URL"),

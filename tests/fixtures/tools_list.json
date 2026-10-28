@@ -2,7 +2,7 @@
   "instructions": "Trello tools. Cards take an ID, short link, or URL; lists, labels, members, and custom fields take a name or ID. Board tools default to the active board. Before any change other people see (comments, new or updated cards, checklists), show the user a preview and wait for approval. Keep text short: main point first.",
   "tools": [
     {
-      "description": "Attach a link, a local file, or base64 data to a card; give exactly one of url, filePath, or data",
+      "description": "Attach a link, a local file, or base64 data to a card; give exactly one of url, filePath, or data Show the user the exact text and wait for approval first.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {

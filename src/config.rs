@@ -224,7 +224,7 @@ impl Config {
         if self.max_upload_bytes <= 0 {
             self.max_upload_bytes = DEFAULT_MAX_UPLOAD_BYTES;
         }
-        self.allowed_workspace_ids = split_and_clean(&self.allowed_workspace_ids.join(","));
+        self.allowed_workspace_ids = parse_workspace_ids(&self.allowed_workspace_ids.join(","));
     }
 
     /// Checks configuration. When `for_server` is true credentials are required too.
@@ -261,7 +261,7 @@ pub fn apply_environment(mut cfg: Config, env: &Env) -> Result<Config, Error> {
     set("TRELLO_WORKSPACE_ID", &mut cfg.workspace_id);
     set("TRELLO_API_BASE_URL", &mut cfg.api_base_url);
     if let Some(value) = env("TRELLO_ALLOWED_WORKSPACES") {
-        cfg.allowed_workspace_ids = split_and_clean(&value);
+        cfg.allowed_workspace_ids = parse_workspace_ids(&value);
     }
     if let Some(value) = env("TRELLO_REQUEST_TIMEOUT_SECONDS") {
         cfg.request_timeout_seconds = parse_int("strconv.Atoi", value.trim())
@@ -276,7 +276,8 @@ pub fn apply_environment(mut cfg: Config, env: &Env) -> Result<Config, Error> {
     Ok(cfg)
 }
 
-fn split_and_clean(value: &str) -> Vec<String> {
+/// Comma-separated IDs, as the CLI and TRELLO_ALLOWED_WORKSPACES take them: trimmed, no blanks or repeats.
+pub fn parse_workspace_ids(value: &str) -> Vec<String> {
     let mut result: Vec<String> = Vec::new();
     for item in value.split(',') {
         let item = item.trim();
@@ -285,11 +286,6 @@ fn split_and_clean(value: &str) -> Vec<String> {
         }
     }
     result
-}
-
-/// Accepts the comma-separated representation used by the CLI.
-pub fn parse_workspace_ids(value: &str) -> Vec<String> {
-    split_and_clean(value)
 }
 
 /// Synchronizes access to the persistent file and produces effective runtime
@@ -326,7 +322,8 @@ impl Manager {
 
     pub fn update(&self, f: impl FnOnce(&mut Config) -> Result<(), Error>) -> Result<(), Error> {
         let mut guard = self.file.write().unwrap_or_else(|p| p.into_inner());
-        let mut next = guard.clone();
+        // The file, not this process's startup copy: `config set` may have changed it since.
+        let mut next = load(&self.path)?;
         f(&mut next)?;
         next.normalize();
         save(&self.path, &next)?;
@@ -441,6 +438,29 @@ mod tests {
         assert!(text.contains("\"default_board_id\": \"board\""));
         assert!(!text.contains("env-token"));
         assert_eq!(manager.effective().unwrap().token, "env-token");
+    }
+
+    #[test]
+    fn manager_update_keeps_changes_made_by_other_processes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        save(&path, &Config::default()).unwrap();
+        let manager = Manager::with_env(path.to_str().unwrap(), no_env()).unwrap();
+        // `config set` in another process, after this server loaded the file.
+        let restricted = Config {
+            allowed_workspace_ids: vec!["w1".into()],
+            ..Config::default()
+        };
+        save(&path, &restricted).unwrap();
+        manager
+            .update(|cfg| {
+                cfg.default_board_id = "board".into();
+                Ok(())
+            })
+            .unwrap();
+        let file = load(&path).unwrap();
+        assert_eq!(file.allowed_workspace_ids, vec!["w1"]);
+        assert_eq!(file.default_board_id, "board");
     }
 
     #[test]

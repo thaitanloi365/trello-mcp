@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
-use crate::{config, trello, util};
+use crate::{config, trello};
+
+pub(crate) use crate::util::path_escape as escape;
 
 mod board;
 mod card;
@@ -163,8 +165,4 @@ pub(crate) fn compact_objects(value: &Value, fields: &[&str]) -> Vec<Value> {
             Value::Object(compact)
         })
         .collect()
-}
-
-pub(crate) fn escape(value: &str) -> String {
-    util::path_escape(value)
 }

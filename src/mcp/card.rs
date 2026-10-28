@@ -2,9 +2,7 @@
 
 use std::{
     collections::HashMap,
-    io::Write,
     path::{Path, PathBuf},
-    time::SystemTime,
 };
 
 use reqwest::Method;
@@ -138,12 +136,7 @@ pub(crate) fn deliver_card(
     {
         return Ok(Output::Text(markdown.to_string()));
     }
-    let path = write_card_output(
-        card_id,
-        "markdown",
-        markdown.as_bytes(),
-        options.output_dir.as_deref(),
-    )?;
+    let path = write_card_output(card_id, markdown, options.output_dir.as_deref())?;
     Ok(Output::Json(json!({
         "path": path.to_string_lossy(), "bytes": markdown.len(),
         "instruction": "The card is too large to return inline; read the Markdown file at path.",
@@ -351,8 +344,7 @@ fn format_minutes(value: f64) -> String {
 
 fn write_card_output(
     card_id: &str,
-    format: &str,
-    payload: &[u8],
+    markdown: &str,
     output_dir: Option<&Path>,
 ) -> Result<PathBuf, Error> {
     let dir = match output_dir {
@@ -368,38 +360,10 @@ fn write_card_output(
     };
     std::fs::create_dir_all(&dir).map_err(wrap("create Trello MCP output directory"))?;
     util::set_mode(&dir, 0o700).map_err(wrap("secure Trello MCP output directory"))?;
-    let extension = if format == "markdown" { "md" } else { "json" };
-    // Dropping the temp file on any error below removes it.
-    let mut temp = tempfile::Builder::new()
-        .prefix(".card-")
-        .suffix(".tmp")
-        .tempfile_in(&dir)
-        .map_err(wrap("create temporary Trello MCP output"))?;
-    util::set_mode(temp.path(), 0o600).map_err(wrap("secure temporary Trello MCP output"))?;
-    temp.write_all(payload)
-        .and_then(|()| temp.write_all(b"\n"))
-        .map_err(wrap("write temporary Trello MCP output"))?;
-    temp.as_file()
-        .sync_all()
-        .map_err(wrap("sync temporary Trello MCP output"))?;
-    let temp_name = temp
-        .path()
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let random = temp_name
-        .strip_prefix(".card-")
-        .and_then(|name| name.strip_suffix(".tmp"))
-        .unwrap_or(&temp_name);
-    let filename = format!(
-        "card-{}-{}-{random}.{extension}",
-        safe_file_part(card_id),
-        utc_stamp(SystemTime::now())
-    );
-    let path = dir.join(filename);
-    temp.persist(&path)
-        .map_err(|err| wrap("save Trello MCP output")(err.error))?;
-    util::set_mode(&path, 0o600).map_err(wrap("secure Trello MCP output"))?;
+    // One file per card, replaced on each read, so the folder never holds more than one a card.
+    let path = dir.join(format!("card-{}.md", safe_file_part(card_id)));
+    util::write_atomic(&path, format!("{markdown}\n").as_bytes(), 0o600, ".card-")
+        .map_err(wrap("save Trello MCP output"))?;
     util::absolute(&path).map_err(wrap("resolve Trello MCP output path"))
 }
 
@@ -422,31 +386,6 @@ fn safe_file_part(value: &str) -> String {
     } else {
         trimmed.into()
     }
-}
-
-/// Go's "20060102T150405Z" layout, in UTC, without a date crate.
-fn utc_stamp(time: SystemTime) -> String {
-    let seconds = time
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let (days, rest) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
-    // Howard Hinnant's civil_from_days.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}{month:02}{day:02}T{:02}{:02}{:02}Z",
-        rest / 3600,
-        rest % 3600 / 60,
-        rest % 60
-    )
 }
 
 /// Host as written in the input (Go's `Hostname()`): no userinfo, port or IPv6 brackets.
@@ -788,21 +727,6 @@ mod tests {
     }
 
     #[test]
-    fn utc_stamp_formats_like_go() {
-        use std::time::{Duration, UNIX_EPOCH};
-        assert_eq!(utc_stamp(UNIX_EPOCH), "19700101T000000Z");
-        // 2000-03-01 is day 11017; 13:14:15 is 47655 s.
-        assert_eq!(
-            utc_stamp(UNIX_EPOCH + Duration::from_secs(11017 * 86_400 + 47_655)),
-            "20000301T131415Z"
-        );
-        assert_eq!(
-            utc_stamp(UNIX_EPOCH + Duration::from_secs(19_723 * 86_400)),
-            "20240101T000000Z"
-        );
-    }
-
-    #[test]
     fn format_minutes_matches_go_percent_g() {
         assert_eq!(format_minutes(1440.0), "1440");
         assert_eq!(format_minutes(0.0), "0");
@@ -816,6 +740,27 @@ mod tests {
         assert_eq!(safe_file_part("///"), "card");
         assert_eq!(safe_file_part(&"a".repeat(60)).len(), 48);
         assert_eq!(safe_file_part(&("a".repeat(47) + "/b")), "a".repeat(47));
+    }
+
+    #[test]
+    fn delivered_card_keeps_one_file_per_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = GetCardOptions {
+            delivery: "file".into(),
+            output_dir: Some(dir.path().to_path_buf()),
+            file_threshold: 1,
+            comments_limit: 10,
+        };
+        let path = |out: Output| match out {
+            Output::Json(v) => v["path"].as_str().unwrap().to_string(),
+            Output::Text(_) => panic!("want a file result"),
+        };
+        let first = path(deliver_card("card-1", "# Old", &options).unwrap());
+        let second = path(deliver_card("card-1", "# New", &options).unwrap());
+        assert_eq!(first, second);
+        assert!(first.ends_with("/card-card-1.md"), "{first}");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "# New\n");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[cfg(unix)]
