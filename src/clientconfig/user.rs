@@ -443,14 +443,29 @@ mod tests {
             got.starts_with("[mcp_servers.canvashand]\ncommand = \"c\"\n\n"),
             "{got}"
         );
-        // BEGIN without END: refused.
+        // Orca/Codex rewrites leave a lone BEGIN on another table, or the
+        // markers out of order: stray markers dropped, our table replaced.
+        for drifted in [
+            format!("[mcp_servers.trello]\ncommand = \"/old/trello-mcp\"\n\n[x]\na = 1\n\n{b}\n\n[features]\nf = false\n"),
+            format!("[mcp_servers.trello]\ncommand = \"/old/trello-mcp\"\n{e}\n\n[x]\na = 1\n\n{b}\n\n[features]\nf = false\n"),
+            format!("{b}\n{b}\n[mcp_servers.trello]\ncommand = \"/old/trello-mcp\"\n\n[x]\na = 1\n"),
+        ] {
+            let (r, got) = run(&drifted);
+            r.unwrap();
+            assert_eq!(got.matches(b).count(), 1, "{got}");
+            assert_eq!(got.matches(e).count(), 1, "{got}");
+            assert!(got.find(b).unwrap() < got.find(e).unwrap(), "{got}");
+            assert!(!got.contains("/old/") && got.contains("[x]\na = 1\n"), "{got}");
+            let again = got.clone();
+            let (r, got) = run(&again);
+            r.unwrap();
+            assert_eq!(got, again);
+        }
+        // Lone BEGIN, no trello table: the marker line is dropped.
         let (r, got) = run(&format!("{b}\n"));
-        let err = r.unwrap_err().to_string();
-        assert!(
-            err.contains("incomplete") && err.contains("config.toml"),
-            "{err}"
-        );
-        assert_eq!(got, format!("{b}\n"));
+        r.unwrap();
+        assert_eq!(got.matches(b).count(), 1, "{got}");
+        assert!(got.starts_with(b), "{got}");
         // CRLF is kept.
         let (r, got) = run("model = \"x\"\r\n");
         r.unwrap();

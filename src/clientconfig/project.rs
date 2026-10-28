@@ -302,9 +302,9 @@ fn merge_codex(content: &str, generated: &str, label: &str, eol: &str) -> Result
     };
     let (begins, ends) = (marked(CODEX_MANAGED_BEGIN), marked(CODEX_MANAGED_END));
 
-    // Our region [from, to), and the old END marker line to delete.
-    let (region, end_line) = match (begins.as_slice(), ends.as_slice()) {
-        ([], []) => (None, None),
+    // Our region [from, to), and the old marker lines to delete.
+    let (region, strays) = match (begins.as_slice(), ends.as_slice()) {
+        ([], []) => (None, vec![]),
         ([b], [e]) if b.start < e.start => {
             let to = region_end(content, &ls, b.next);
             let span = parse_toml(&content[b.next..to], label)?;
@@ -319,23 +319,21 @@ fn merge_codex(content: &str, generated: &str, label: &str, eol: &str) -> Result
                     "settings other than mcp_servers.trello sit right after \"{CODEX_MANAGED_BEGIN}\"; move them out or remove the markers"
                 )));
             }
-            (Some((b.start, to)), Some(e))
+            (Some((b.start, to)), vec![*e])
         }
-        // Codex drops the BEGIN comment when it rewrites the file.
-        ([], [e]) => {
+        // Codex and Orca rewrite the file and drop or move our marker comments:
+        // any marker proves we wrote it, so find our table by its header.
+        _ => {
             let own = ls.iter().find(|l| {
                 header_path(&content[l.start..l.end])
                     .is_some_and(|p| p == ["mcp_servers", "trello"])
             });
+            let mut strays: Vec<&Line> = begins.iter().chain(&ends).copied().collect();
+            strays.sort_by_key(|l| l.start);
             (
                 own.map(|l| (l.start, region_end(content, &ls, l.next))),
-                Some(e),
+                strays,
             )
-        }
-        _ => {
-            return Err(err(format!(
-                "the \"{CODEX_MANAGED_BEGIN}\" / \"{CODEX_MANAGED_END}\" markers are incomplete, repeated or out of order; fix or remove them"
-            )));
         }
     };
 
@@ -363,7 +361,7 @@ fn merge_codex(content: &str, generated: &str, label: &str, eol: &str) -> Result
             trailing = eol.into();
         }
         let mut edits = vec![(from, to, format!("{block}{trailing}"))];
-        if let Some(e) = end_line.filter(|e| e.start < from || e.start >= to) {
+        for e in strays.iter().filter(|e| e.start < from || e.start >= to) {
             edits.push((e.start, e.next, String::new()));
         }
         edits.sort_by_key(|e| std::cmp::Reverse(e.0));
@@ -372,8 +370,10 @@ fn merge_codex(content: &str, generated: &str, label: &str, eol: &str) -> Result
         }
         return checked_toml(content, label);
     }
-    if let Some(e) = end_line {
-        content.replace_range(e.start..e.next, "");
+    if !strays.is_empty() {
+        for e in strays.iter().rev() {
+            content.replace_range(e.start..e.next, "");
+        }
         table = parse_toml(&content, label)?;
     }
 
