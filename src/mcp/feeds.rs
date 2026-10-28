@@ -7,7 +7,7 @@ use reqwest::Method;
 use serde_json::{Value, json};
 
 use super::{Error, Server, escape, msg, nested_string, object_slice};
-use crate::util::ago;
+use crate::{trello, util::ago};
 
 /// The card fields every view needs.
 const CARD_FIELDS: &str =
@@ -20,9 +20,10 @@ const QUERY_CHARS: usize = 200;
 pub(crate) enum ListKind {
     ReadyForDev,
     InProgress,
+    Testing,
 }
 
-/// "Ready for Development", "READY FOR DEV 🚀"; "In-Progress (BE)": case, spaces and marks aside.
+/// "Ready for Development", "READY FOR DEV 🚀"; "In-Progress (BE)"; "Testing (QA)": case, spaces and marks aside.
 pub(crate) fn list_kind(name: &str) -> Option<ListKind> {
     let key: String = name
         .chars()
@@ -33,6 +34,8 @@ pub(crate) fn list_kind(name: &str) -> Option<ListKind> {
         Some(ListKind::ReadyForDev)
     } else if key.starts_with("inprogress") {
         Some(ListKind::InProgress)
+    } else if key.starts_with("testing") {
+        Some(ListKind::Testing)
     } else {
         None
     }
@@ -132,6 +135,21 @@ pub(crate) fn card_view(card: &Value, board: &Value, now: i64) -> Value {
     })
 }
 
+/// The one-card board `card_view` and `waiting_rows` read, from a card that embeds its board,
+/// list and members (`card_in_context`, search with `card_board`).
+pub(crate) fn context(card: &Value) -> Value {
+    let board = card.get("board").filter(|b| b.is_object());
+    let field = |k: &str| board.and_then(|b| b.get(k)).cloned().unwrap_or_default();
+    json!({
+        "id": nested_string(card, &["idBoard"]),
+        "name": field("name"),
+        "url": field("url"),
+        "lists": card.get("list").into_iter().collect::<Vec<_>>(),
+        "members": card.get("members").cloned().unwrap_or_default(),
+        "cards": [card],
+    })
+}
+
 /// The cards in every list of this kind, by board (by name); in list order, then card order.
 pub(crate) fn named_lists(boards: &[Value], kind: ListKind, now: i64) -> Vec<Value> {
     let mut out: Vec<Value> = boards
@@ -167,9 +185,9 @@ pub(crate) fn named_lists(boards: &[Value], kind: ListKind, now: i64) -> Vec<Val
     out
 }
 
-/// The pure part of `waiting`: mentions of the last 30 days on open cards in `boards` with no
-/// comment of yours on that card since; one row per card (its latest mention), newest first.
-pub(crate) fn waiting_rows(notes: &Value, mine: &Value, boards: &[Value], now: i64) -> Vec<Value> {
+/// Mentions of the last 30 days with no comment of yours on that card since: card id → its
+/// mentions, newest first.
+fn unanswered(notes: &Value, mine: &Value, now: i64) -> HashMap<String, Vec<(i64, Value)>> {
     let since = now - WAITING_DAYS * 86_400;
     let mut my_last: HashMap<String, i64> = HashMap::new();
     for a in object_slice(mine) {
@@ -181,10 +199,6 @@ pub(crate) fn waiting_rows(notes: &Value, mine: &Value, boards: &[Value], now: i
             *last = (*last).max(t);
         }
     }
-    let cards: HashMap<String, (&Value, &Value)> = boards
-        .iter()
-        .flat_map(|b| cards_of(b).map(move |c| (nested_string(c, &["id"]), (c, b))))
-        .collect();
     let mut by_card: HashMap<String, Vec<(i64, Value)>> = HashMap::new();
     for n in object_slice(notes) {
         let n = Value::Object(n);
@@ -192,21 +206,40 @@ pub(crate) fn waiting_rows(notes: &Value, mine: &Value, boards: &[Value], now: i
         let Some(t) = unix_seconds(&nested_string(&n, &["date"])) else {
             continue;
         };
-        // Archived or out-of-scope cards are not in `cards`.
-        if t < since
-            || !cards.contains_key(&card_id)
-            || my_last.get(&card_id).is_some_and(|m| *m > t)
-        {
+        if t < since || card_id.is_empty() || my_last.get(&card_id).is_some_and(|m| *m > t) {
             continue;
         }
         by_card.entry(card_id).or_default().push((t, n));
     }
-    let mut rows: Vec<(i64, Value)> = by_card
+    for mentions in by_card.values_mut() {
+        mentions.sort_by_key(|(t, _)| -t);
+    }
+    by_card
+}
+
+/// The pure part of `waiting`: unanswered mentions on open cards in `boards` that sit in a Ready
+/// for dev, In progress or Testing list; one row per card (its latest mention), newest first.
+pub(crate) fn waiting_rows(notes: &Value, mine: &Value, boards: &[Value], now: i64) -> Vec<Value> {
+    // Archived or out-of-scope cards are not in `cards`; nor are cards in any other list.
+    let cards: HashMap<String, (&Value, &Value)> = boards
+        .iter()
+        .flat_map(|b| {
+            let lists = by_id(b, "lists", "name");
+            cards_of(b)
+                .filter(move |c| {
+                    lists
+                        .get(&nested_string(c, &["idList"]))
+                        .and_then(|l| list_kind(l))
+                        .is_some()
+                })
+                .map(move |c| (nested_string(c, &["id"]), (c, b)))
+        })
+        .collect();
+    let mut rows: Vec<(i64, Value)> = unanswered(notes, mine, now)
         .into_iter()
-        .map(|(card_id, mut mentions)| {
-            mentions.sort_by_key(|(t, _)| -t);
+        .filter_map(|(card_id, mentions)| {
+            let (card, board) = cards.get(&card_id)?;
             let (t, n) = &mentions[0];
-            let (card, board) = cards[&card_id];
             let text = nested_string(n, &["data", "text"]);
             let mention = if text.chars().count() > MENTION_CHARS {
                 text.chars().take(MENTION_CHARS - 1).chain(['…']).collect()
@@ -234,7 +267,7 @@ pub(crate) fn waiting_rows(notes: &Value, mine: &Value, boards: &[Value], now: i
                 r.insert("commentUrl".into(), json!(comment_url));
                 r.insert("earlier".into(), json!(mentions.len() - 1));
             }
-            (*t, row)
+            Some((*t, row))
         })
         .collect();
     rows.sort_by_key(|(t, _)| -t);
@@ -314,8 +347,37 @@ impl Server {
             .await?)
     }
 
-    /// The @mentions waiting on you, on the open cards of `boards` (their snapshots).
-    pub(crate) async fn waiting(&self, boards: &[Value], now: i64) -> Result<Vec<Value>, Error> {
+    /// One card with its board, list and members embedded; None when it is gone or archived.
+    /// `id` is a card id or short link.
+    pub(crate) async fn card_in_context(&self, id: &str) -> Result<Option<Value>, Error> {
+        match self
+            .client
+            .call(
+                Method::GET,
+                &format!("/cards/{}", escape(id)),
+                json!({
+                    "fields": format!("{CARD_FIELDS},closed"),
+                    "board": true, "board_fields": "name,url",
+                    "list": true, "list_fields": "name",
+                    "members": true, "member_fields": "initials",
+                }),
+                None,
+            )
+            .await
+        {
+            Ok(c) if c.get("closed").and_then(Value::as_bool) != Some(true) => Ok(Some(c)),
+            // 400 is Trello's "invalid id": a short link no card has.
+            Ok(_)
+            | Err(trello::Error::Api {
+                status: 400 | 404, ..
+            }) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// The @mentions waiting on you on boards in `scope` (board ids); reads only the cards that
+    /// have an unanswered mention, to learn their list.
+    pub(crate) async fn waiting(&self, scope: &[String], now: i64) -> Result<Vec<Value>, Error> {
         let notes = self
             .client
             .call(
@@ -335,34 +397,59 @@ impl Server {
                 None,
             )
             .await?;
-        Ok(waiting_rows(&notes, &mine, boards, now))
+        let in_scope = |board: &str| scope.iter().any(|b| b == board);
+        // All at once: the client's pacing still caps the rate.
+        let mut tasks = tokio::task::JoinSet::new();
+        for (id, mentions) in unanswered(&notes, &mine, now) {
+            if in_scope(&nested_string(&mentions[0].1, &["data", "board", "id"])) {
+                let server = self.clone();
+                tasks.spawn(async move { server.card_in_context(&id).await });
+            }
+        }
+        let mut boards = Vec::new();
+        while let Some(card) = tasks.join_next().await {
+            let card = card.map_err(|e| msg(format!("card load: {e}")))??;
+            // The card may have moved to a board out of scope since.
+            if let Some(c) = card.filter(|c| in_scope(&nested_string(c, &["idBoard"]))) {
+                boards.push(context(&c));
+            }
+        }
+        Ok(waiting_rows(&notes, &mine, &boards, now))
     }
 
-    /// Card numbers and links resolve from the snapshot; words go to Trello's search on the same boards.
+    /// A card number looks in `board` (the selected project) only; a link reads that card; words
+    /// go to Trello's search on the boards in `scope`.
     pub(crate) async fn search_cards(
         &self,
         q: &str,
-        boards: &[Value],
+        scope: &[String],
+        board: &str,
         now: i64,
     ) -> Result<Vec<Value>, Error> {
+        let in_scope = |c: &Value| scope.contains(&nested_string(c, &["idBoard"]));
         let text = match classify(q)? {
             Query::Empty => return Ok(Vec::new()),
             Query::Number(n) => {
-                return Ok(find(boards, now, |c| {
+                if !scope.iter().any(|b| b == board) {
+                    return Err(msg("Pick a project to find a card by its number."));
+                }
+                let snapshot = self.board_snapshot(board).await?;
+                return Ok(find(&[snapshot], now, |c| {
                     c.get("idShort").and_then(Value::as_i64) == Some(n)
                 }));
             }
             Query::Link(link) => {
-                let hits = find(boards, now, |c| nested_string(c, &["shortLink"]) == link);
-                if !hits.is_empty() || q.contains("trello.com/c/") {
-                    return Ok(hits);
+                if let Some(c) = self.card_in_context(&link).await?.filter(in_scope) {
+                    return Ok(vec![card_view(&c, &context(&c), now)]);
+                }
+                if q.contains("trello.com/c/") {
+                    return Ok(Vec::new());
                 }
                 link
             }
             Query::Text(text) => text,
         };
-        let ids: Vec<String> = boards.iter().map(|b| nested_string(b, &["id"])).collect();
-        if ids.is_empty() {
+        if scope.is_empty() {
             return Ok(Vec::new());
         }
         let found = self
@@ -371,28 +458,19 @@ impl Server {
                 Method::GET,
                 "/search",
                 json!({
-                    "query": text, "modelTypes": "cards", "idBoards": ids.join(","),
+                    "query": text, "modelTypes": "cards", "idBoards": scope.join(","),
                     "cards_limit": 20, "partial": true, "card_fields": format!("{CARD_FIELDS},closed"),
+                    "card_board": true, "card_list": true, "card_members": true,
                 }),
                 None,
             )
             .await?;
-        let by_board: HashMap<String, &Value> = boards
-            .iter()
-            .map(|b| (nested_string(b, &["id"]), b))
-            .collect();
         Ok(object_slice(found.get("cards").unwrap_or(&Value::Null))
             .into_iter()
-            .filter_map(|c| {
-                let c = Value::Object(c);
-                // Search also finds archived cards; the dashboard shows open ones only.
-                if c.get("closed").and_then(Value::as_bool) == Some(true) {
-                    return None;
-                }
-                by_board
-                    .get(&nested_string(&c, &["idBoard"]))
-                    .map(|b| card_view(&c, b, now))
-            })
+            .map(Value::Object)
+            // Search also finds archived cards; the dashboard shows open ones only.
+            .filter(|c| c.get("closed").and_then(Value::as_bool) != Some(true) && in_scope(c))
+            .map(|c| card_view(&c, &context(&c), now))
             .collect())
     }
 }
@@ -426,18 +504,42 @@ pub(crate) mod tests {
     pub(crate) fn board() -> Value {
         json!({
             "id": "b1", "name": "Client Portal", "url": "https://trello.com/b/B1/client-portal",
-            "lists": [{"id": "l1", "name": "In Progress"}, {"id": "l2", "name": "Ready for Dev 🚀"}, {"id": "l3", "name": "Done"}],
+            "lists": [{"id": "l1", "name": "In Progress"}, {"id": "l2", "name": "Ready for Dev 🚀"}, {"id": "l3", "name": "Done"}, {"id": "l4", "name": "Testing"}],
             "members": [{"id": "m1", "initials": "MT", "fullName": "Mai Tran"}],
             "cards": [
                 card("c1", 348, "Block physical address", "aaaa1111", "l1", 1.0),
                 card("c2", 61, "Migrate cron jobs", "bbbb2222", "l2", 2.0),
                 card("c3", 7, "Rate limit quotes", "cccc3333", "l2", 1.0),
                 card("c4", 9, "Shipped thing", "dddd4444", "l3", 1.0),
+                card("c5", 12, "Check invoices", "eeee5555", "l4", 1.0),
             ]
         })
     }
 
-    fn mention(id: &str, card: &str, seconds_ago: i64, text: &str) -> Value {
+    /// A card of `board()` as `card_in_context` returns it: board, list and members embedded.
+    pub(crate) fn in_context(id: &str) -> Value {
+        let b = board();
+        let mut c = b["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id)
+            .unwrap()
+            .clone();
+        let list = b["lists"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["id"] == c["idList"])
+            .unwrap()
+            .clone();
+        c["board"] = json!({"id": "b1", "name": "Client Portal", "url": "https://trello.com/b/B1/client-portal"});
+        c["list"] = list;
+        c["members"] = json!([{"id": "m1", "initials": "MT"}]);
+        c
+    }
+
+    pub(crate) fn mention(id: &str, card: &str, seconds_ago: i64, text: &str) -> Value {
         json!({
             "id": format!("n-{id}"), "type": "mentionedOnCard", "date": at(seconds_ago), "idAction": id,
             "data": {"text": text, "card": {"id": card}, "board": {"id": "b1"}},
@@ -458,6 +560,9 @@ pub(crate) mod tests {
             ("In progress", Some(ListKind::InProgress)),
             ("In-Progress", Some(ListKind::InProgress)),
             ("In progress (BE)", Some(ListKind::InProgress)),
+            ("Testing", Some(ListKind::Testing)),
+            ("TESTING (QA) 🧪", Some(ListKind::Testing)),
+            ("Ready for testing", None),
             ("Ready", None),
             ("Not in progress", None),
             ("Progress review", None),
@@ -529,11 +634,18 @@ pub(crate) mod tests {
             mention("a4", "c3", 5 * 86_400, "@loithai answered already"),
             mention("a5", "c1", 40 * 86_400, "@loithai too old"),
             mention("a6", "gone", 3600, "@loithai on an archived card"),
+            mention("a7", "c4", 3600, "@loithai on a card in Done"),
+            mention("a8", "c5", 3 * 86_400 + 60, "@loithai can you test this?"),
             json!({"id": "n-x", "date": at(60), "data": {}}),
         ]);
         let mine = json!([my_comment("c3", 4 * 86_400), my_comment("c1", 3 * 3600)]);
         let rows = waiting_rows(&notes, &mine, &[board()], now());
-        assert_eq!(rows.len(), 2, "{rows:#?}");
+        assert_eq!(
+            rows.len(),
+            3,
+            "only Ready for dev, In progress and Testing: {rows:#?}"
+        );
+        assert_eq!(rows[2]["list"], "Testing");
         assert_eq!(
             (
                 &rows[0]["number"],
@@ -603,35 +715,65 @@ pub(crate) mod tests {
         assert!(classify(&"a".repeat(200)).is_ok() && classify(&"a".repeat(201)).is_err());
     }
 
+    #[test]
+    fn context_rebuilds_the_board_a_view_reads() {
+        let c = in_context("c3");
+        assert_eq!(
+            card_view(&c, &context(&c), now()),
+            card_view(&board()["cards"][2], &board(), now())
+        );
+        assert_eq!(context(&json!({"id": "x"}))["cards"][0]["id"], "x");
+    }
+
     #[tokio::test]
-    async fn snapshot_and_waiting_ask_trello_for_the_right_things() {
+    async fn waiting_reads_only_the_mentioned_cards() {
         let h = test_server(&[], |req| match req.url.path() {
-            "/boards/b1" => json_response(board()),
-            "/members/me/notifications" => {
-                json_response(json!([mention("a1", "c1", 60, "@me hi")]))
-            }
+            "/members/me/notifications" => json_response(json!([
+                mention("a1", "c1", 60, "@me hi"),
+                mention("a2", "c4", 60, "@me done?"),
+                mention("a3", "gone", 60, "@me deleted card"),
+                mention("a4", "c3", 40 * 86_400, "@me too old"),
+                ({
+                    let mut m = mention("a5", "c2", 60, "@me other workspace");
+                    m["data"]["board"]["id"] = json!("elsewhere");
+                    m
+                }),
+            ])),
             "/members/me/actions" => json_response(json!([])),
+            "/cards/c1" => json_response(in_context("c1")),
+            "/cards/c4" => json_response(in_context("c4")),
             _ => not_found(),
         })
         .await;
-        let boards = vec![h.server.board_snapshot("b1").await.unwrap()];
-        let rows = h.server.waiting(&boards, now()).await.unwrap();
-        assert_eq!(rows.len(), 1);
+        let rows = h.server.waiting(&["b1".into()], now()).await.unwrap();
+        assert_eq!(rows.len(), 1, "{rows:#?}");
+        assert_eq!(
+            (&rows[0]["number"], &rows[0]["list"], &rows[0]["members"]),
+            (&json!(348), &json!("In Progress"), &json!(["MT"]))
+        );
+        let mut asked = calls(&h.api).await;
+        asked.sort();
+        assert_eq!(
+            asked,
+            [
+                "GET /cards/c1",
+                "GET /cards/c4",
+                "GET /cards/gone",
+                "GET /members/me/actions",
+                "GET /members/me/notifications"
+            ],
+            "no board loads, no card off scope or too old"
+        );
         let reqs = h.api.received_requests().await.unwrap();
         let q = |path: &str| query(reqs.iter().find(|r| r.url.path() == path).unwrap());
-        let b = q("/boards/b1");
+        let c = q("/cards/c1");
         assert_eq!(
             (
-                b["lists"].as_str(),
-                b["cards"].as_str(),
-                b["members"].as_str()
+                c["board"].as_str(),
+                c["list"].as_str(),
+                c["members"].as_str()
             ),
-            ("open", "open", "all")
-        );
-        assert!(
-            b["card_fields"].contains("shortLink")
-                && b["card_fields"].contains("idShort")
-                && b["card_fields"].contains("pos")
+            ("true", "true", "true")
         );
         assert_eq!(q("/members/me/notifications")["filter"], "mentionedOnCard");
         let a = q("/members/me/actions");
@@ -642,64 +784,105 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn search_uses_the_snapshot_for_numbers_and_links() {
+    async fn a_card_moved_off_scope_is_not_waiting() {
         let h = test_server(&[], |req| match req.url.path() {
-            "/search" => json_response(json!({"cards": [
-                card("c1", 348, "Block physical address", "aaaa1111", "l1", 1.0),
-                json!({"idBoard": "b1", "idShort": 9, "name": "Old address", "closed": true})
-            ]})),
+            "/members/me/notifications" => json_response(json!([mention("a1", "c1", 60, "@me")])),
+            "/members/me/actions" => json_response(json!([])),
+            "/cards/c1" => {
+                let mut c = in_context("c1");
+                c["idBoard"] = json!("elsewhere");
+                json_response(c)
+            }
             _ => not_found(),
         })
         .await;
-        let boards = [board()];
-        let s = &h.server;
-        assert_eq!(
-            s.search_cards("#61", &boards, now()).await.unwrap()[0]["name"],
-            "Migrate cron jobs"
-        );
-        let url = "https://trello.com/c/cccc3333/7-rate-limit";
-        assert_eq!(
-            s.search_cards(url, &boards, now()).await.unwrap()[0]["number"],
-            7
-        );
         assert!(
-            s.search_cards("https://trello.com/c/zzzz9999", &boards, now())
+            h.server
+                .waiting(&["b1".into()], now())
                 .await
                 .unwrap()
                 .is_empty()
         );
-        assert!(s.search_cards("", &boards, now()).await.unwrap().is_empty());
-        assert!(
-            calls(&h.api).await.is_empty(),
-            "numbers, links and empty queries never call Trello"
-        );
-        let found = s.search_cards("address", &boards, now()).await.unwrap();
-        assert_eq!(found.len(), 1, "an archived hit is dropped");
+    }
+
+    #[tokio::test]
+    async fn search_finds_numbers_in_the_project_links_by_card_and_words_by_search() {
+        let h = test_server(&[], |req| match req.url.path() {
+            "/boards/b1" => json_response(board()),
+            "/cards/cccc3333" => json_response(in_context("c3")),
+            "/search" => json_response(json!({"cards": [
+                in_context("c1"),
+                json!({"idBoard": "b1", "idShort": 9, "name": "Old address", "closed": true}),
+                json!({"idBoard": "elsewhere", "idShort": 1, "name": "Off scope address"})
+            ]})),
+            _ => not_found(),
+        })
+        .await;
+        let s = &h.server;
+        let scope = ["b1".to_string()];
         assert_eq!(
-            (&found[0]["number"], &found[0]["list"]),
-            (&json!(348), &json!("In Progress"))
+            s.search_cards("#61", &scope, "b1", now()).await.unwrap()[0]["name"],
+            "Migrate cron jobs"
+        );
+        assert!(
+            s.search_cards("#61", &scope, "", now())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("Pick a project")
+        );
+        assert!(
+            s.search_cards("#61", &scope, "elsewhere", now())
+                .await
+                .is_err(),
+            "a board out of scope is no project"
+        );
+        let url = "https://trello.com/c/cccc3333/7-rate-limit";
+        let hit = s.search_cards(url, &scope, "", now()).await.unwrap();
+        assert_eq!(
+            (&hit[0]["number"], &hit[0]["list"]),
+            (&json!(7), &json!("Ready for Dev 🚀"))
+        );
+        assert!(
+            s.search_cards("https://trello.com/c/zzzz9999", &scope, "", now())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            s.search_cards("", &scope, "", now())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !calls(&h.api).await.iter().any(|c| c.ends_with("/search")),
+            "numbers, links and empty queries never search"
+        );
+        let found = s.search_cards("address", &scope, "", now()).await.unwrap();
+        assert_eq!(
+            found.len(),
+            1,
+            "archived and off-scope hits are dropped: {found:#?}"
+        );
+        assert_eq!(
+            (&found[0]["number"], &found[0]["list"], &found[0]["members"]),
+            (&json!(348), &json!("In Progress"), &json!(["MT"]))
         );
         let reqs = h.api.received_requests().await.unwrap();
-        let q = query(&reqs[0]);
+        let q = query(reqs.iter().find(|r| r.url.path() == "/search").unwrap());
         assert_eq!(
             (
                 q["query"].as_str(),
                 q["modelTypes"].as_str(),
-                q["idBoards"].as_str()
+                q["idBoards"].as_str(),
+                q["card_list"].as_str()
             ),
-            ("address", "cards", "b1")
+            ("address", "cards", "b1", "true")
         );
-        // A bare 8-character short link that is no open card falls back to words.
-        s.search_cards("abcd1234", &boards, now()).await.unwrap();
-        assert_eq!(calls(&h.api).await.len(), 2);
-        // An all-letter short link resolves from the snapshot, with no Trello call.
-        let mut letters = board();
-        letters["cards"][0]["shortLink"] = json!("OXiBYZoj");
-        let hit = s.search_cards("OXiBYZoj", &[letters], now()).await.unwrap();
-        assert_eq!(hit[0]["number"], 348);
-        assert_eq!(calls(&h.api).await.len(), 2);
-        // A bare 8-letter word with no card behind it still reaches search.
-        s.search_cards("invoices", &boards, now()).await.unwrap();
-        assert_eq!(calls(&h.api).await.len(), 3);
+        // A bare 8-character token that is no card falls back to words.
+        let searches = |c: Vec<String>| c.iter().filter(|c| c.ends_with("/search")).count();
+        s.search_cards("invoices", &scope, "", now()).await.unwrap();
+        assert_eq!(searches(calls(&h.api).await), 2);
     }
 }

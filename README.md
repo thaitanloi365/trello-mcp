@@ -251,11 +251,20 @@ Log: `~/Library/Logs/trello-mcp-tray.log`. `make tray-test` runs its selftest.
 
 `trello-mcp dashboard` serves a page on http://127.0.0.1:8790 with:
 - the tray's server table;
-- Trello card search, by words, a card number or a card URL;
-- the @mentions from the last 30 days you haven't commented after, each with a Copy comment link
-  button;
-- the cards in every "Ready for dev" and "In progress" list on your boards in the allowed
-  workspaces.
+- Trello card search, by words, a card URL, or a card number in the picked project;
+- three tabs:
+  - Waiting on you: the @mentions from the last 30 days you haven't commented after, on cards in a
+    "Ready for dev", "In progress" or "Testing" list, each with a Copy comment link button;
+  - Ready for dev and In progress: the cards of one project (a board in the allowed workspaces),
+    loaded only when you pick it.
+
+Send to Orca, on each card in those two tabs, starts Claude, Codex or agy on the card in a new
+Orca worktree. Pick the repo once per project. The worktree is
+`trello-<card short link>`, so a card never gets two: a second send marks the existing one unread
+in Orca. It branches from whatever the repo's main folder has checked out. The agent is told to
+read the card, make the change, run the tests, open a pull request into that branch, merge it
+itself, and remove the worktree. It stops and keeps the worktree when a step fails. Orca must be
+running; the dashboard calls `$ORCA_CLI_COMMAND`, else Orca.app's own `orca`.
 
 The tray starts it from this checkout's `bin/trello-mcp`, restarts it if it dies, and opens it
 from Dashboard (⌘D).

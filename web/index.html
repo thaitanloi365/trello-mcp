@@ -63,8 +63,22 @@ h1 { display: flex; align-items: center; gap: 14px; font-size: 40px; line-height
 .quote .small { display: block; margin-top: 2px; }
 .acts { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 
+/* Tabs: Waiting on you | Ready for dev | In progress, over one heavy rule; a bar marks the open one. */
+.tabs { display: flex; flex-wrap: wrap; gap: 0 28px; margin-top: 44px; border-bottom: 4px solid var(--ink); }
+.tab { display: flex; align-items: baseline; gap: 10px; padding: 10px 0; font: inherit; font-size: 22px; font-weight: 700; letter-spacing: -.02em; color: var(--muted); background: transparent; border: 0; border-radius: 0; cursor: pointer; }
+.tab[aria-selected=true] { color: var(--ink); box-shadow: inset 0 4px 0 var(--ink); }
+@media (hover: hover) { .tab:hover { color: var(--ink); } }
+.tab .n.red { color: var(--red-ink); }
+.note { margin: 12px 0 0; color: var(--muted); font-size: 13px; }
+
+/* The project, and where Send to Orca goes. */
+.bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 20px; margin-top: 16px; }
+.bar label { display: flex; flex-direction: column; gap: 4px; min-width: 0; max-width: 100%; }
+select { min-height: 32px; max-width: 100%; padding: 2px 8px; font: inherit; font-size: 14px; color: var(--ink); background: var(--paper); border: 2px solid var(--ink); border-radius: 0; }
+@media (pointer: coarse) { select { min-height: 44px; } }
+.status { margin-top: 10px; font-size: 13px; overflow-wrap: anywhere; }
+
 /* Ready for dev | In progress. */
-.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 40px; }
 .board { margin-top: 14px; display: flex; gap: 8px; align-items: baseline; padding-bottom: 4px; border-bottom: 1px solid var(--ink); font-size: 13px; font-weight: 700; }
 .board a { text-decoration: none; }
 .board span { color: var(--muted); font-weight: 400; }
@@ -94,7 +108,7 @@ button.sg { width: 100%; min-height: 40px; padding: 0; font: inherit; font-size:
 @media (max-width: 860px) {
   main { padding: 20px 16px 48px; }
   h1 { font-size: 30px; }
-  .cols, .wait { grid-template-columns: 1fr; }
+  .wait { grid-template-columns: 1fr; }
   .acts { justify-content: flex-start; }
   .sg { grid-template-columns: 48px minmax(0, 1fr) 56px 50px 84px; }
   .sg .up, .sg .cpu { display: none; }
@@ -117,18 +131,32 @@ button.sg { width: 100%; min-height: 40px; padding: 0; font: inherit; font-size:
   </header>
 
   <section class="search">
-    <label class="label" for="q">Search cards: words, a card number, or a card URL</label>
+    <label class="label" for="q">Search cards: words, a card URL, or a card number in the picked project</label>
     <form class="box" id="search"><input id="q" type="search" autocomplete="off" placeholder="Search cards"><button class="btn" type="submit">Search</button></form>
     <div id="results" aria-live="polite"></div>
   </section>
 
-  <h2 class="sec">Waiting on you <span class="n" id="waiting-n"></span><span class="aside">@mentions from the last 30 days you haven't commented after</span></h2>
-  <div id="waiting"></div>
-
-  <div class="cols">
-    <div><h2 class="sec">Ready for dev <span class="n" id="ready-n"></span></h2><div id="ready"></div></div>
-    <div><h2 class="sec">In progress <span class="n" id="progress-n"></span></h2><div id="progress"></div></div>
+  <div class="tabs" id="tabs" role="tablist" aria-label="Cards">
+    <button class="tab" type="button" role="tab" id="tab-waiting" aria-controls="waiting-panel" data-tab="waiting">Waiting on you <span class="n" id="waiting-n"></span></button>
+    <button class="tab" type="button" role="tab" id="tab-ready" aria-controls="lists-panel" data-tab="ready">Ready for dev <span class="n" id="ready-n"></span></button>
+    <button class="tab" type="button" role="tab" id="tab-progress" aria-controls="lists-panel" data-tab="progress">In progress <span class="n" id="progress-n"></span></button>
   </div>
+
+  <section id="waiting-panel" role="tabpanel" aria-labelledby="tab-waiting">
+    <p class="note">@mentions from the last 30 days, on cards in Ready for dev, In progress or Testing, that you haven't commented after.</p>
+    <div id="waiting"></div>
+  </section>
+
+  <section id="lists-panel" role="tabpanel" hidden>
+    <div class="bar">
+      <label><span class="label">Project</span><select id="board"><option value="">Pick a project</option></select></label>
+      <label><span class="label">Repo for Send to Orca</span><select id="repo" disabled><option value="">Pick a repo</option></select></label>
+      <label><span class="label">Agent</span><select id="agent"><option value="claude">Claude</option><option value="codex">Codex</option><option value="agy">agy</option></select></label>
+    </div>
+    <div class="status" id="orca-status" aria-live="polite"></div>
+    <div id="ready"></div>
+    <div id="progress" hidden></div>
+  </section>
 
   <h2 class="sec">Servers <span class="aside">live · every 2 s</span></h2>
   <div id="servers"></div>
@@ -227,19 +255,137 @@ function renderWaiting(w) {
   $('waiting').replaceChildren(...out);
 }
 
+// Tabs: the choice stays in this browser. Ready for dev and In progress share the project bar.
+const TABS = ['waiting', 'ready', 'progress'];
+function showTab(t) {
+  if (!TABS.includes(t)) t = 'waiting';
+  for (const b of $('tabs').querySelectorAll('[role=tab]')) {
+    const on = b.dataset.tab === t;
+    b.setAttribute('aria-selected', String(on));
+    b.tabIndex = on ? 0 : -1;
+  }
+  $('waiting-panel').hidden = t !== 'waiting';
+  $('lists-panel').hidden = t === 'waiting';
+  $('lists-panel').setAttribute('aria-labelledby', 'tab-' + t);
+  $('ready').hidden = t !== 'ready';
+  $('progress').hidden = t !== 'progress';
+  store.set('tab', t);
+}
+$('tabs').addEventListener('click', e => { const t = e.target.closest('[role=tab]')?.dataset.tab; if (t) showTab(t); });
+$('tabs').addEventListener('keydown', e => {
+  const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+  if (!step) return;
+  const at = TABS.indexOf(store.get('tab') || 'waiting');
+  const t = TABS[(at + step + TABS.length) % TABS.length];
+  showTab(t);
+  $('tab-' + t).focus();
+});
+showTab(store.get('tab'));
+
+// Send to Orca: the repo is remembered per project, the agent once.
+const board = () => $('board').value;
+function orcaStatus(text, failed) { $('orca-status').replaceChildren(failed ? errorBox(text) : el('span', '', text)); }
+function sendBtn(c) {
+  const b = el('button', 'btn sm primary', 'Send to Orca');
+  b.type = 'button';
+  b.addEventListener('click', async () => {
+    const repo = $('repo').value, agent = $('agent').value;
+    if (!repo) { orcaStatus('Pick the repo for this project first.', true); $('repo').focus(); return; }
+    b.disabled = true;
+    b.textContent = 'Sending…';
+    try {
+      const q = new URLSearchParams({ card: c.url, repo, agent });
+      const r = await fetch('/api/orca/send?' + q, { method: 'POST', headers: { 'X-Trello-MCP': '1' } });
+      if (!r.ok) throw new Error((await r.text()).trim() || `HTTP ${r.status}`);
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      b.textContent = d.existing ? 'In Orca' : 'Sent';
+      orcaStatus(d.existing
+        ? `${number(c)} already has ${d.name}: marked unread in Orca.`
+        : `${agent} is on ${number(c)} in ${d.name}, from ${d.base}.`);
+    } catch (e) {
+      b.textContent = 'Send to Orca';
+      b.disabled = false;
+      orcaStatus(`${number(c)}: ${e.message}`, true);
+    }
+  });
+  return b;
+}
+
 function renderLists(id, section, name) {
   const boards = section.boards || [];
   $(id + '-n').textContent = boards.reduce((n, b) => n + b.cards.length, 0) || '';
   const out = section.error ? [errorBox(section.error)] : [];
-  if (!boards.length) out.push(el('p', 'empty', `No cards in ${name} lists.`));
+  if (!boards.length && !section.error) out.push(el('p', 'empty', `No cards in ${name} lists.`));
   for (const b of boards) {
     const head = el('div', 'board');
     head.append(link('', b.board, b.url), el('span', '', String(b.cards.length)));
     out.push(head);
-    for (const c of b.cards) out.push(cardRow(c, join(members(c), activity(c)), [copyBtn('Copy', c.url)]));
+    for (const c of b.cards) out.push(cardRow(c, join(members(c), activity(c)), [sendBtn(c), copyBtn('Copy', c.url)]));
   }
   $(id).replaceChildren(...out);
 }
+
+function listsMessage(node) {
+  for (const id of ['ready', 'progress']) { $(id).replaceChildren(node.cloneNode(true)); $(id + '-n').textContent = ''; }
+}
+
+// One project at a time; only the latest pick's answer shows.
+let boardSeq = 0;
+async function loadBoard() {
+  const id = board(), seq = ++boardSeq;
+  if (!id) { listsMessage(el('p', 'empty', 'Pick a project to see its cards.')); return; }
+  listsMessage(el('p', 'empty', 'Loading…'));
+  try {
+    const d = await getJSON('/api/board?id=' + encodeURIComponent(id));
+    if (seq !== boardSeq) return;
+    if (d.error) throw new Error(d.error);
+    renderLists('ready', d.ready, 'Ready for dev');
+    renderLists('progress', d.progress, 'In progress');
+  } catch (e) {
+    if (seq === boardSeq) listsMessage(errorBox(e.message));
+  }
+}
+
+function fillBoards(boards) {
+  const was = board() || store.get('board') || '';
+  const sorted = [...boards].sort((a, b) => (a.workspace || '').localeCompare(b.workspace || '') || a.name.localeCompare(b.name));
+  const opts = [el('option', '', 'Pick a project')];
+  opts[0].value = '';
+  for (const b of sorted) {
+    const o = el('option', '', b.workspace ? `${b.name} · ${b.workspace}` : b.name);
+    o.value = b.id;
+    opts.push(o);
+  }
+  $('board').replaceChildren(...opts);
+  $('board').value = boards.some(b => b.id === was) ? was : '';
+}
+
+let repos = null;
+function pickRepo() {
+  $('repo').disabled = !repos || !board();
+  $('repo').value = (board() && store.get('repo:' + board())) || '';
+  if ($('repo').selectedIndex < 0) $('repo').value = '';
+}
+async function loadRepos() {
+  try {
+    const d = await getJSON('/api/orca/repos');
+    if (d.error) throw new Error(d.error);
+    repos = d.repos.sort((a, b) => a.name.localeCompare(b.name));
+    const opts = [el('option', '', 'Pick a repo')];
+    opts[0].value = '';
+    for (const r of repos) { const o = el('option', '', r.name); o.value = r.id; o.title = r.path; opts.push(o); }
+    $('repo').replaceChildren(...opts);
+  } catch (e) {
+    orcaStatus('Orca unavailable: ' + e.message, true);
+  }
+  pickRepo();
+}
+$('board').addEventListener('change', () => { store.set('board', board()); $('orca-status').replaceChildren(); pickRepo(); loadBoard(); });
+$('repo').addEventListener('change', () => { if (board()) store.set('repo:' + board(), $('repo').value); });
+$('agent').value = store.get('agent') || 'claude';
+if ($('agent').selectedIndex < 0) $('agent').value = 'claude';
+$('agent').addEventListener('change', () => store.set('agent', $('agent').value));
 
 let loadingTrello = false, lastTrello = 0;
 async function loadTrello(fresh) {
@@ -250,13 +396,16 @@ async function loadTrello(fresh) {
     const d = await getJSON('/api/trello' + (fresh ? '?fresh=1' : ''));
     if (d.error) throw new Error(d.error);
     lastTrello = Date.now();
-    $('meta').textContent = `${plural(d.boards, 'board')} · updated ${new Date(d.updatedAt * 1000).toLocaleTimeString([], { hour12: false })}`;
+    $('meta').textContent = `${plural(d.boards.length, 'board')} · updated ${new Date(d.updatedAt * 1000).toLocaleTimeString([], { hour12: false })}`;
     renderWaiting(d.waiting);
-    renderLists('ready', d.ready, 'Ready for dev');
-    renderLists('progress', d.progress, 'In progress');
+    fillBoards(d.boards);
+    pickRepo();
+    await loadBoard();
   } catch (e) {
     $('meta').textContent = 'Trello unavailable';
-    for (const id of ['waiting', 'ready', 'progress']) { $(id).replaceChildren(errorBox(e.message)); $(id + '-n').textContent = ''; }
+    $('waiting').replaceChildren(errorBox(e.message));
+    $('waiting-n').textContent = '';
+    listsMessage(errorBox(e.message));
   } finally {
     loadingTrello = false;
     $('refresh').disabled = false;
@@ -271,7 +420,7 @@ async function search() {
   const seq = ++searchSeq;
   if (!q) { $('results').replaceChildren(); return; }
   try {
-    const d = await getJSON('/api/search?q=' + encodeURIComponent(q));
+    const d = await getJSON('/api/search?' + new URLSearchParams({ q, board: board() }));
     if (seq !== searchSeq) return;
     if (d.error) throw new Error(d.error);
     $('results').replaceChildren(...(d.cards.length
@@ -376,6 +525,7 @@ async function loadServers() {
 }
 
 loadServers();
+loadRepos();
 loadTrello(false);
 setInterval(() => { if (!document.hidden) loadServers(); }, 2000);
 setInterval(() => { if (!document.hidden) loadTrello(false); }, 5 * 60 * 1000);

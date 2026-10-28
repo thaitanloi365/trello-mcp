@@ -1,0 +1,10 @@
+name = "trello-mcp"
+
+[web]
+  default_env = "local"
+  viewports = ["desktop", "phone"]
+  [web.envs]
+    [web.envs.local]
+      base_url = "http://127.0.0.1:8795/"
+      hosts = ["127.0.0.1"]
+      mode = "full"

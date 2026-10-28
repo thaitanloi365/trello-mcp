@@ -19,6 +19,11 @@ All notable changes to this project are documented in this file.
 - `trello-mcp dashboard`: a local page (127.0.0.1:8790) with the server table, Trello card search,
   the @mentions waiting on you (copy the comment link), and the cards in "Ready for dev" and
   "In progress" lists. The tray runs it; `make tailnet` opens it to your own Tailscale login.
+- Dashboard: Waiting on you, Ready for dev and In progress are tabs. Waiting on you keeps only cards
+  in Ready for dev, In progress or Testing lists and no longer loads every board (~58 calls down to
+  2 plus one per mentioned card). The lists load one picked project at a time; a card number
+  searches that project. Send to Orca starts Claude, Codex or agy on a card in its own Orca
+  worktree, which opens a PR into the branch it came from, merges it and cleans up.
 - `serve` runs on a current-thread runtime: an idle server uses less memory and fewer threads.
 
 ## [2.0.0] - 2026-10-12
