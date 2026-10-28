@@ -443,9 +443,12 @@ mod tests {
             got.starts_with("[mcp_servers.canvashand]\ncommand = \"c\"\n\n"),
             "{got}"
         );
-        // Orca/Codex rewrites leave a lone BEGIN on another table, or the
-        // markers out of order: stray markers dropped, our table replaced.
+        // Orca/Codex rewrites leave a lone BEGIN on another table, the
+        // markers out of order, or none at all: stray markers dropped, our
+        // table replaced.
         for drifted in [
+            "[mcp_servers.trello]\ncommand = \"/old/bin/trello-mcp\"\nargs = [\"serve\"]\n\n[x]\na = 1\n"
+                .to_string(),
             format!(
                 "[mcp_servers.trello]\ncommand = \"/old/trello-mcp\"\n\n[x]\na = 1\n\n{b}\n\n[features]\nf = false\n"
             ),

@@ -301,10 +301,16 @@ fn merge_codex(content: &str, generated: &str, label: &str, eol: &str) -> Result
             .collect()
     };
     let (begins, ends) = (marked(CODEX_MANAGED_BEGIN), marked(CODEX_MANAGED_END));
+    let runs_trello_mcp = table
+        .get("mcp_servers")
+        .and_then(|m| m.get("trello"))
+        .and_then(|t| t.get("command"))
+        .and_then(|c| c.as_str())
+        .is_some_and(|c| Path::new(c).file_name().is_some_and(|n| n == "trello-mcp"));
 
     // Our region [from, to), and the old marker lines to delete.
     let (region, strays) = match (begins.as_slice(), ends.as_slice()) {
-        ([], []) => (None, vec![]),
+        ([], []) if !runs_trello_mcp => (None, vec![]),
         ([b], [e]) if b.start < e.start => {
             let to = region_end(content, &ls, b.next);
             let span = parse_toml(&content[b.next..to], label)?;
@@ -322,7 +328,8 @@ fn merge_codex(content: &str, generated: &str, label: &str, eol: &str) -> Result
             (Some((b.start, to)), vec![*e])
         }
         // Codex and Orca rewrite the file and drop or move our marker comments:
-        // any marker proves we wrote it, so find our table by its header.
+        // any marker, or a trello-mcp command, proves we wrote it, so find our
+        // table by its header.
         _ => {
             let own = ls.iter().find(|l| {
                 header_path(&content[l.start..l.end])
