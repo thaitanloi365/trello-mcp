@@ -23,7 +23,9 @@ All notable changes to this project are documented in this file.
   in Ready for dev, In progress or Testing lists and no longer loads every board (~58 calls down to
   2 plus one per mentioned card). The lists load one picked project at a time; a card number
   searches that project. Send to Orca starts Claude, Codex or agy on a card in its own Orca
-  worktree, which opens a PR into the branch it came from, merges it and cleans up.
+  worktree, which opens a PR into the branch it came from and, once you have reviewed it and
+  replied ok, merges it, deletes the branch and removes the worktree. It never releases a new
+  version (`make release`, `make release-ios`, `make release-android`) unless you ask.
 - Dashboard: the project, repo and agent pickers are searchable (type to filter, arrow keys and
   Enter to pick). Servers is a fourth tab. Each tab shows a skeleton of its rows while it loads,
   on the first load and on Refresh; the 5-minute reload swaps the data in place.

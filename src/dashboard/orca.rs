@@ -1,8 +1,8 @@
 //! Send to Orca: one worktree per card, or per group of cards, named after them so a card never
 //! gets two, branched from what the repo's main folder has checked out, with an agent in bypass
 //! mode told to fix the cards (a prompt for snags, features or spikes, from their labels), run the
-//! tests, open a PR into that branch, merge it and remove the worktree. Each card's session is
-//! saved in its own file. Send selected starts a planner that groups the cards and sends each group.
+//! tests, open a PR into that branch and, once the user has reviewed it and confirms, merge it and
+//! remove the branch and worktree. Each card's session is saved in its own file. Send selected starts a planner that groups the cards and sends each group.
 
 use std::{
     fs::File,
@@ -238,6 +238,7 @@ pub(crate) async fn sessions(bin: &str) -> Result<Vec<Value>, String> {
 fn prompt(cards: &[&Card], base: &str) -> String {
     let urls: Vec<String> = cards.iter().map(|c| card_url(&c.link)).collect();
     let read = "1) Read each card with the Trello MCP tools: description, checklists, attachments and comments.";
+    let release = "Never release a new version (make release, make release-ios, make release-android or any other release) unless the user asks.";
     if cards.iter().all(|c| c.kind == Kind::Spike) {
         let what = match urls.as_slice() {
             [one] => format!("the Trello card {one}"),
@@ -247,7 +248,7 @@ fn prompt(cards: &[&Card], base: &str) -> String {
             ),
         };
         return format!(
-            "Research {what} . Spikes: answer their questions without changing the code: no commit, no push, no pull request. \
+            "Research {what} . Spikes: answer their questions without changing the code: no commit, no push, no pull request. {release} \
              {read} \
              2) Investigate in this worktree: read the code and run experiments, undoing any change they make. \
              3) Report what you found, the options with their trade-offs and your recommendation, then stop and keep this worktree."
@@ -271,13 +272,15 @@ fn prompt(cards: &[&Card], base: &str) -> String {
         })
         .collect();
     format!(
-        "Fix {cards_text} . {hints}\
+        "Fix {cards_text} . {hints}{release} \
          {read} \
          2) Make the change in this worktree; its branch was made from {base}. \
          3) Run the project's tests and fix every failure. \
          4) Commit, push this branch and open a pull request into {base} (gh pr create --base {base}). \
-         5) Wait for its checks (gh pr checks --watch) and fix and push until they pass, then merge the pull request yourself with gh pr merge, using a merge method the repo allows. Do not pass --delete-branch: {base} is checked out in another worktree. \
-         6) Once it is merged, delete the remote branch if GitHub kept it, then, as the very last step, remove this worktree: orca worktree rm --worktree active --force . \
+         5) Wait for its checks (gh pr checks --watch) and fix and push until they pass. \
+         6) Then stop and ask the user to review the pull request: do not merge it, and keep this worktree and its branch, local and remote, until the user confirms with ok. If they ask for changes instead, make them, push and ask again. \
+         7) Only after the user confirms, merge the pull request with gh pr merge, using a merge method the repo allows. Do not pass --delete-branch: {base} is checked out in another worktree. \
+         8) Once it is merged, delete the remote branch if GitHub kept it, then, as the very last step, remove this worktree: orca worktree rm --worktree active --force . \
          If a step fails and you cannot fix it, stop there, keep the worktree and the pull request, and say what is blocking."
     )
 }
@@ -602,6 +605,8 @@ esac
                 && p.contains("tests")
                 && p.contains("gh pr create --base feature-x")
                 && p.contains("gh pr merge")
+                && p.contains("do not merge it")
+                && p.contains("until the user confirms")
                 && p.contains("orca worktree rm --worktree active"),
             "{words:?}"
         );
@@ -664,12 +669,13 @@ esac
         let p = prompt(&[&snag], "dev");
         assert!(
             p.starts_with("Fix the Trello card https://trello.com/c/AbCd1234 . It is a snag (a bug): reproduce it first")
-                && p.contains("gh pr merge"),
+                && p.contains("gh pr merge")
+                && p.contains("Never release a new version (make release, make release-ios, make release-android"),
             "{p}"
         );
         let plain = prompt(&[&card("AbCd1234", "#1 x")], "dev");
         assert!(
-            plain.starts_with("Fix the Trello card https://trello.com/c/AbCd1234 . 1) Read"),
+            plain.starts_with("Fix the Trello card https://trello.com/c/AbCd1234 . Never release"),
             "{plain}"
         );
 
@@ -679,7 +685,8 @@ esac
             p.starts_with(
                 "Research the Trello card https://trello.com/c/Ef56Gh78 . Spikes: answer"
             ) && !p.contains("gh pr")
-                && p.contains("keep this worktree"),
+                && p.contains("keep this worktree")
+                && p.contains("Never release"),
             "{p}"
         );
         // A spike in a group with code to change: the group still ships, the spike gets a note.

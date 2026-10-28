@@ -270,8 +270,10 @@ all; pick the repo once per project. The worktree is
 one unread in Orca. A card already in Orca shows its repo, agent and state (`Orca: ahai_backend,
 claude · working`) and an In Orca button in place of Send to Orca, also after a reload.
 It branches from whatever the repo's main folder has checked out. The agent is told to
-read the card, make the change, run the tests, open a pull request into that branch, merge it
-itself, and remove the worktree. It stops and keeps the worktree when a step fails. The card's
+read the card, make the change, run the tests and open a pull request into that branch. Then it
+stops for your review: only after you reply ok does it merge the pull request, delete the branch
+and remove the worktree. It never runs `make release`, `make release-ios`, `make release-android`
+or any other release unless you ask. It stops and keeps the worktree when a step fails. The card's
 labels pick the prompt: a Snag or Bug is reproduced, root-caused and fixed with a regression test;
 a Feature/Enhancement or Change Request is built to its checklists with tests; a SPIKE is
 researched only (findings in the terminal, no code, no pull request). Each card's session (Orca
