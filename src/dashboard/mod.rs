@@ -313,6 +313,8 @@ pub(crate) fn router(dash: Arc<Dash>, tailnet: bool) -> Router {
         .route("/api/orca/sessions", get(orca_sessions))
         .route("/api/orca/send", post(orca_send))
         .route("/api/orca/focus", post(orca_focus))
+        .route("/api/orca/runs", get(orca_runs))
+        .route("/api/orca/resume", post(orca_resume))
         .fallback(|| async { http_error(StatusCode::NOT_FOUND, "404 page not found") })
         .layer(middleware::from_fn_with_state(
             (dash.clone(), tailnet),
@@ -711,7 +713,15 @@ async fn orca_send(
         )
         .await
     } else {
-        orca::send(&dash.orca, get("repo"), get("agent"), &cards, &dash.saved).await
+        orca::send(
+            &dash.orca,
+            &dash.cli,
+            get("repo"),
+            get("agent"),
+            &cards,
+            &dash.saved,
+        )
+        .await
     };
     match sent {
         Ok(v) => json_ok(&v),
@@ -735,6 +745,53 @@ async fn orca_focus(
         Ok(v) => json_ok(&v),
         Err(e) => json_ok(&json!({"error": e})),
     }
+}
+
+/// Orca runs: every card session sent to Orca, newest first, with the result its agent saved and,
+/// while its worktree is there, its agent's state. With Orca down the runs still show, with why.
+async fn orca_runs(State(dash): State<Arc<Dash>>, h: HeaderMap) -> Response {
+    if !dash.is_ours(&h) {
+        return http_error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let (live, orca_error) = match orca::sessions(&dash.orca).await {
+        Ok(s) => (s, None),
+        Err(e) => (Vec::new(), Some(e)),
+    };
+    json_ok(&json!({"runs": orca::runs(&dash.saved, &live), "orcaError": orca_error}))
+}
+
+/// Resume (?card=<card link>): In Orca while the card's worktree is there, else its Claude session
+/// again in its repo's main folder. Only our page.
+async fn orca_resume(
+    State(dash): State<Arc<Dash>>,
+    h: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !dash.is_ours(&h) {
+        return http_error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let Some(Ok(feeds::Query::Link(link))) = q.get("card").map(|c| feeds::classify(c)) else {
+        return http_error(StatusCode::BAD_REQUEST, "card must be a Trello card link");
+    };
+    let projects = FsPath::new(&dash.home).join(".claude/projects");
+    match orca::resume(&dash.orca, &dash.saved, &projects, &link).await {
+        Ok(v) => json_ok(&v),
+        Err(e) => json_ok(&json!({"error": e})),
+    }
+}
+
+/// `trello-mcp orca-report`, what each Orca agent runs to save its result: merges `fields` into
+/// the saved session of each of `cards` (links).
+pub(crate) fn report_cards(config_path: &str, cards: &[String], fields: &Value) -> Result<()> {
+    let mut links = Vec::new();
+    for url in cards {
+        let Ok(feeds::Query::Link(link)) = feeds::classify(url) else {
+            bail!("{url}: not a Trello card link");
+        };
+        links.push(link);
+    }
+    let links: Vec<&str> = links.iter().map(String::as_str).collect();
+    orca::report(&sessions_dir(&config_dir(config_path)?), &links, fields).map_err(|e| anyhow!(e))
 }
 
 /// `trello-mcp orca-send`, what the planner runs for each group: Send to Orca for `cards` (links,
@@ -761,7 +818,11 @@ pub(crate) async fn send_cards(
         group.push(card_ref(&card));
     }
     let saved = sessions_dir(&config_dir(config_path)?);
-    orca::send(&orca::cli(), repo, agent, &group, &saved)
+    let cli = std::env::current_exe()
+        .and_then(|p| p.canonicalize())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    orca::send(&orca::cli(), &cli, repo, agent, &group, &saved)
         .await
         .map_err(|e| anyhow!(e))
 }
@@ -1239,14 +1300,19 @@ mod tests {
                 "{cards}"
             );
         }
-        for path in ["/api/orca/repos", "/api/orca/sessions"] {
+        for path in ["/api/orca/repos", "/api/orca/sessions", "/api/orca/runs"] {
             assert_eq!(call(&us, "GET", path, &mine[..1]).await.0, 403, "{path}");
         }
-        let focus = "/api/orca/focus?card=https%3A%2F%2Ftrello.com%2Fc%2Faaaa1111";
-        assert_eq!(call(&us, "POST", focus, &mine[..1]).await.0, 403);
-        assert_eq!(call(&us, "GET", focus, &mine).await.0, 405);
-        for bad in ["/api/orca/focus", "/api/orca/focus?card=hello"] {
-            assert_eq!(call(&us, "POST", bad, &mine).await.0, 400, "{bad}");
+        for route in ["focus", "resume"] {
+            let one = format!("/api/orca/{route}?card=https%3A%2F%2Ftrello.com%2Fc%2Faaaa1111");
+            assert_eq!(call(&us, "POST", &one, &mine[..1]).await.0, 403, "{one}");
+            assert_eq!(call(&us, "GET", &one, &mine).await.0, 405, "{one}");
+            for bad in [
+                format!("/api/orca/{route}"),
+                format!("/api/orca/{route}?card=hello"),
+            ] {
+                assert_eq!(call(&us, "POST", &bad, &mine).await.0, 400, "{bad}");
+            }
         }
         assert_eq!(
             call(&us, "POST", "/api/project?id=b1&enabled=1", &mine[..1])
@@ -1295,6 +1361,20 @@ mod tests {
         assert_eq!(repos["repos"].as_array().unwrap().len(), 1, "{repos}");
         let sessions = get_json(&us, "/api/orca/sessions").await;
         assert_eq!(sessions, json!({"sessions": []}));
+        let runs = get_json(&us, "/api/orca/runs").await;
+        assert_eq!(
+            (
+                &runs["runs"][0]["cards"],
+                &runs["runs"][0]["state"],
+                &runs["orcaError"]
+            ),
+            (
+                &json!(["https://trello.com/c/aaaa1111"]),
+                &Value::Null,
+                &Value::Null
+            ),
+            "{runs}"
+        );
         let picked = "/api/orca/send?repo=r1&agent=codex&cards=https%3A%2F%2Ftrello.com%2Fc%2Faaaa1111,https%3A%2F%2Ftrello.com%2Fc%2Fbbbb2222";
         let (status, raw) = call(&us, "POST", picked, &mine).await;
         assert_eq!(status, 200);
@@ -1377,6 +1457,8 @@ mod tests {
             "/api/orca/sessions",
             "/api/orca/send",
             "/api/orca/focus",
+            "/api/orca/runs",
+            "/api/orca/resume",
             "X-Trello-MCP",
             "open-groups",
             "localStorage",

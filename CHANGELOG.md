@@ -43,6 +43,13 @@ All notable changes to this project are documented in this file.
   prompt: Snag or Bug (reproduce, root cause, regression test), Feature/Enhancement or Change
   Request (build to the checklists, with tests), SPIKE (research only, no code or PR). Each card's
   Orca session is saved in `orca-sessions/<short link>.json` beside the config file.
+- Dashboard: an Orca runs tab lists every card sent to Orca, newest first, kept after its worktree
+  is removed: its result (waiting for your review, merged, done or blocked), what the agent did and
+  how it checked it, its pull request and e2e (proofsheet portal) links, a draft reply for the card
+  or the client (Copy reply), and Resume, which opens a finished Claude session again
+  (`claude --resume`) in plan mode in its repo's main folder. Agents save the result with the new
+  `trello-mcp orca-report`; their prompt now asks for a proofsheet e2e run when the change shows
+  on a screen.
 - Dashboard: a Config tab enables projects and maps each to its Orca repos (`dashboard.json` beside
   the config file). Only enabled projects are fetched; with none enabled, all are. The repo picker
   lists the project's mapped repos, else those matching its name, else all.

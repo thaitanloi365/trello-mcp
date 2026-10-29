@@ -58,6 +58,7 @@ h1 { display: flex; align-items: center; gap: 14px; font-size: 40px; line-height
 @media (hover: hover) { .wait .t a:hover { text-decoration: underline; } }
 .quote { margin: 0; font-size: 14px; border-left: 3px solid var(--ink); padding-left: 10px; overflow-wrap: anywhere; }
 .quote .small { display: block; margin-top: 2px; }
+.quote.pre { white-space: pre-wrap; }
 .acts { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 .pick { width: 20px; height: 20px; margin: 0; align-self: center; accent-color: var(--red); cursor: pointer; }
 @media (pointer: coarse) { .pick { width: 28px; height: 28px; } }
@@ -177,6 +178,7 @@ button.sg { width: 100%; min-height: 40px; padding: 0; font: inherit; font-size:
     <button class="tab" type="button" role="tab" id="tab-waiting" aria-controls="waiting-panel" data-tab="waiting">Waiting on you <span class="n" id="waiting-n"></span></button>
     <button class="tab" type="button" role="tab" id="tab-ready" aria-controls="lists-panel" data-tab="ready">Ready for dev <span class="n" id="ready-n"></span></button>
     <button class="tab" type="button" role="tab" id="tab-progress" aria-controls="lists-panel" data-tab="progress">In progress <span class="n" id="progress-n"></span></button>
+    <button class="tab" type="button" role="tab" id="tab-runs" aria-controls="runs-panel" data-tab="runs">Orca runs <span class="n" id="runs-n"></span></button>
     <button class="tab" type="button" role="tab" id="tab-servers" aria-controls="servers-panel" data-tab="servers">Servers <span class="n" id="servers-n"></span></button>
     <button class="tab" type="button" role="tab" id="tab-config" aria-controls="config-panel" data-tab="config">Config</button>
   </div>
@@ -197,6 +199,12 @@ button.sg { width: 100%; min-height: 40px; padding: 0; font: inherit; font-size:
     <div class="status" id="orca-status" aria-live="polite"></div>
     <div id="ready"></div>
     <div id="progress" hidden></div>
+  </section>
+
+  <section id="runs-panel" role="tabpanel" aria-labelledby="tab-runs" hidden>
+    <p class="note">Each card sent to Orca, newest first, with the result its agent saved, kept after its worktree is removed. Resume opens a Claude session again in its repo's main folder.</p>
+    <div class="status" id="runs-status" aria-live="polite"></div>
+    <div id="runs"></div>
   </section>
 
   <section id="servers-panel" role="tabpanel" aria-labelledby="tab-servers" hidden>
@@ -220,11 +228,12 @@ function el(tag, cls, text) {
   if (text != null) e.textContent = text;
   return e;
 }
-// Links only ever point at Trello.
+// Card links only ever point at Trello; an Orca run's pull request and e2e links at https pages.
 const trelloURL = u => /^https:\/\/trello\.com\//.test(u || '') ? u : null;
-function link(cls, text, url) {
+const httpsURL = u => /^https:\/\//.test(u || '') ? u : null;
+function link(cls, text, url, check = trelloURL) {
   const a = el('a', cls, text);
-  const u = trelloURL(url);
+  const u = check(url);
   if (u) { a.href = u; a.target = '_blank'; a.rel = 'noopener'; }
   return a;
 }
@@ -359,7 +368,7 @@ function renderWaiting(w) {
 }
 
 // Tabs: the choice stays in this browser. Ready for dev and In progress share the project bar.
-const TABS = ['waiting', 'ready', 'progress', 'servers', 'config'];
+const TABS = ['waiting', 'ready', 'progress', 'runs', 'servers', 'config'];
 let tab = 'waiting';
 function showTab(t) {
   if (!TABS.includes(t)) t = 'waiting';
@@ -371,6 +380,7 @@ function showTab(t) {
   }
   const lists = t === 'ready' || t === 'progress';
   $('waiting-panel').hidden = t !== 'waiting';
+  $('runs-panel').hidden = t !== 'runs';
   $('servers-panel').hidden = t !== 'servers';
   $('config-panel').hidden = t !== 'config';
   $('lists-panel').hidden = !lists;
@@ -543,6 +553,7 @@ function sendBtn(c, s) {
         ? `${number(c)} already has ${d.name} in ${d.repo}: marked unread in Orca.`
         : join(`${agent} is on ${number(c)} in ${d.name}, from ${d.base}.`, d.warning));
       loadBoard(true);
+      loadRuns();
     } catch (e) {
       b.textContent = label;
       b.disabled = false;
@@ -584,6 +595,7 @@ $('send-picked').addEventListener('click', async () => {
       ? `Claude is grouping ${plural(d.cards, 'card')} in ${d.repo}: it starts one ${agent} session per group in Orca.`
       : join(`${agent} is on it in ${d.name}, from ${d.base}.`, d.warning));
     loadBoard(true);
+    loadRuns();
   } catch (e) {
     orcaStatus(e.message, true);
   }
@@ -957,10 +969,57 @@ async function loadServers() {
   catch (e) { $('servers').replaceChildren(errorBox(e.message)); }
 }
 
+// Orca runs: what each agent saved with `trello-mcp orca-report`, and Resume.
+const RESULT = { review: 'waiting for your review', merged: 'merged', done: 'done', blocked: 'blocked' };
+const when = t => t ? new Date(t * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '';
+function resumeBtn(r) {
+  const b = el('button', 'btn sm', r.state ? 'In Orca' : 'Resume');
+  b.type = 'button';
+  b.title = r.state ? `${r.name}: show it in Orca` : `${r.name}: open its Claude session again in Orca`;
+  b.addEventListener('click', async () => {
+    try {
+      const d = await postJSON('/api/orca/resume?' + new URLSearchParams({ card: r.cards[0] }));
+      $('runs-status').replaceChildren(el('span', '', `${d.resumed ? 'Resumed' : 'Showing'} ${d.name} in Orca.`));
+    } catch (e) {
+      $('runs-status').replaceChildren(errorBox(e.message));
+    }
+  });
+  return b;
+}
+function runRow(r) {
+  const rep = r.report || {}, row = el('div', 'wait'), card = el('div'), t = el('div', 't');
+  t.append(link('', r.title || r.name, r.cards?.[0]));
+  const result = RESULT[rep.status] || (r.state ? '' : 'no result saved');
+  card.append(t, el('div', 'small', join(r.repo, r.agent, 'sent ' + when(r.sentAt), result, r.state && 'Orca: ' + r.state)));
+  const quote = rep.summary ? el('blockquote', 'quote pre', rep.summary) : el('div');
+  if (rep.summary && rep.at) quote.append(el('span', 'small', 'saved ' + when(rep.at)));
+  const acts = el('div', 'acts');
+  if (rep.reply) acts.append(copyBtn('Copy reply', rep.reply, true));
+  if (r.state || r.agent === 'claude') acts.append(resumeBtn(r));
+  if (httpsURL(rep.pr)) acts.append(link('btn sm', 'Pull request', rep.pr, httpsURL));
+  (rep.e2e || []).filter(httpsURL).forEach((u, i, all) => acts.append(link('btn sm', all.length > 1 ? `E2E ${i + 1}` : 'E2E', u, httpsURL)));
+  row.append(card, quote, acts);
+  return row;
+}
+async function loadRuns() {
+  try {
+    const d = await getJSON('/api/orca/runs');
+    const runs = d.runs || [], waiting = runs.filter(r => ['review', 'blocked'].includes(r.report?.status)).length;
+    $('runs-n').textContent = waiting || '';
+    $('runs-n').classList.toggle('red', waiting > 0);
+    const out = d.orcaError ? [errorBox('Orca unavailable, so no live state: ' + d.orcaError)] : [];
+    if (!runs.length) out.push(el('p', 'empty', 'No cards sent to Orca yet.'));
+    $('runs').replaceChildren(...out, ...runs.map(runRow));
+  } catch (e) {
+    $('runs').replaceChildren(errorBox(e.message));
+  }
+}
+
 // What Refresh does on each tab.
 const RELOAD = {
   waiting: () => loadWaiting(true),
   lists: async () => { listsMessage(listsBones()); if (await loadBoards(true)) await loadBoard(); },
+  runs: loadRuns,
   servers: loadServers,
   config: () => { $('config').replaceChildren(configBones()); return Promise.all([loadBoards(true), loadRepos()]); },
 };
@@ -970,12 +1029,14 @@ function reloadQuietly() {
   lastLoad = Date.now();
   loadWaiting(false, true);
   loadBoards(false).then(ok => { if (ok) loadBoard(true); });
+  loadRuns();
 }
 
 $('servers').replaceChildren(serversBones());
 $('config').replaceChildren(configBones());
 listsMessage(listsBones());
 loadServers();
+loadRuns();
 loadWaiting(false);
 loadRepos();
 loadBoards(false).then(ok => { if (ok) loadBoard(); });

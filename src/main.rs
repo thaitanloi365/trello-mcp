@@ -62,6 +62,27 @@ enum Command {
         #[arg(required = true)]
         cards: Vec<String>,
     },
+    /// Save an Orca agent's result for the dashboard (the agents' tool)
+    OrcaReport {
+        /// review, merged, done or blocked
+        #[arg(long)]
+        status: String,
+        /// pull request URL
+        #[arg(long)]
+        pr: Option<String>,
+        /// an e2e run's portal link; once per run
+        #[arg(long)]
+        e2e: Vec<String>,
+        /// what was done and how it was checked
+        #[arg(long)]
+        summary: Option<String>,
+        /// a draft comment for the Trello card or the client
+        #[arg(long)]
+        reply: Option<String>,
+        /// card links
+        #[arg(required = true)]
+        cards: Vec<String>,
+    },
     /// Create, edit, show, and validate persistent configuration
     Config {
         #[command(subcommand)]
@@ -216,6 +237,21 @@ fn run(
                 .build()?
                 .block_on(dashboard::send_cards(&config_path, &repo, &agent, &cards))?;
             Ok(writeln!(stdout, "{sent}")?)
+        }
+        Some(Command::OrcaReport {
+            status,
+            pr,
+            e2e,
+            summary,
+            reply,
+            cards,
+        }) => {
+            // An empty e2e list keeps the links saved before, as a missing flag keeps any field.
+            let e2e = (!e2e.is_empty()).then_some(e2e);
+            let fields = serde_json::json!({"status": status, "pr": pr, "e2e": e2e,
+                "summary": summary, "reply": reply});
+            dashboard::report_cards(&config_path, &cards, &fields)?;
+            Ok(writeln!(stdout, "saved")?)
         }
         Some(Command::Version) => Ok(writeln!(stdout, "{}", version::CURRENT)?),
         Some(Command::Config { command }) => run_config(command, &config_path, stdout, stderr),

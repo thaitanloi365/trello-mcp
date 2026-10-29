@@ -251,11 +251,12 @@ Log: `~/Library/Logs/trello-mcp-tray.log`. `make tray-test` runs its selftest.
 
 `trello-mcp dashboard` serves a page on http://127.0.0.1:8790 with:
 - Trello card search, by words, a card URL, or a card number in the picked project;
-- five tabs, each loading on its own; Refresh reloads the open one:
+- six tabs, each loading on its own; Refresh reloads the open one:
   - Waiting on you: the @mentions from the last 30 days you haven't commented after, on cards in a
     "Ready for dev", "In progress" or "Testing" list, each with a Copy comment link button;
   - Ready for dev and In progress: the cards of one project (a board in the allowed workspaces),
     loaded only when you pick it. The project, repo and agent pickers are searchable;
+  - Orca runs: each card sent to Orca and the result its agent saved (see below);
   - Servers: the tray's server table;
   - Config: tick the projects to fetch and map each to its Orca repos. Only enabled projects are
     fetched (the project picker, Waiting on you, search); with none enabled, all are. Saved in
@@ -281,6 +282,20 @@ researched only (findings in the terminal, no code, no pull request). Each card'
 worktree id, terminal, repo, branch, agent) is saved in `orca-sessions/<short link>.json` beside
 the config file. Orca must be running; the dashboard calls `$ORCA_CLI_COMMAND`, else Orca.app's
 own `orca`.
+
+The agent also checks a change that shows on a screen end to end with a proofsheet flow run, and
+saves its result into the card's session with `trello-mcp orca-report <card links> --status
+review|merged|done|blocked [--pr <url>] [--e2e <url>]… [--summary <text>] [--reply <text>]`: when
+the pull request is ready for review, again once merged, when a spike is done, or when a step is
+blocked. A later call keeps the fields it leaves out. Links must be https. The Orca runs tab lists
+every saved session, newest first, also after its worktree is removed: the result, what the agent
+did and how it checked it, its pull request and e2e links, and a draft reply for the card or the
+client (Copy reply). Its count is the runs waiting for your review or blocked. Resume shows a card
+still in Orca there; once its worktree is gone, it opens the card's Claude session again
+(`claude --resume`) in a new Orca terminal in the repo's main folder, in plan mode: it reads back and
+answers but edits nothing in your checkout unless you switch mode (shift+tab). For follow-up fixes,
+send the card to Orca again. Codex and
+agy sessions cannot be resumed from the page.
 
 Every card has a tick box and a Copy button for its link. Copy links copies the ticked cards'
 links, one per line. Send selected sends the ticked cards that are not in Orca yet, together. A

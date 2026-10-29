@@ -2,7 +2,9 @@
 //! gets two, branched from what the repo's main folder has checked out, with an agent in bypass
 //! mode told to fix the cards (a prompt for snags, features or spikes, from their labels), run the
 //! tests, open a PR into that branch and, once the user has reviewed it and confirms, merge it and
-//! remove the branch and worktree. Each card's session is saved in its own file. Send selected starts a planner that groups the cards and sends each group.
+//! remove the branch and worktree. Each card's session is saved in its own file, with the result
+//! the agent saves with `trello-mcp orca-report`. Send selected starts a planner that groups the
+//! cards and sends each group.
 
 use std::{
     fs::File,
@@ -258,6 +260,12 @@ pub(crate) async fn focus(bin: &str, link: &str) -> Result<Value, String> {
             format!("{name} has no terminal open in Orca")
         })?;
     orca(bin, &["terminal", "switch", "--terminal", term]).await?;
+    raise(bin).await;
+    Ok(json!({"name": wt["displayName"], "repo": wt["repo"]}))
+}
+
+/// Brings Orca to the front.
+async fn raise(bin: &str) {
     // shortcut: an `orca` outside an app bundle (on PATH) leaves Orca where it is; Orca.app's own
     // copy is the default.
     if let Some((app, _)) = bin.split_once(".app/") {
@@ -267,13 +275,89 @@ pub(crate) async fn focus(bin: &str, link: &str) -> Result<Value, String> {
         )
         .await;
     }
-    Ok(json!({"name": wt["displayName"], "repo": wt["repo"]}))
+}
+
+/// The Claude session that ran in `path`, the last one written to in Claude's folder for it in
+/// `projects` (~/.claude/projects): every character but letters and digits becomes `-`.
+fn claude_session(projects: &Path, path: &str) -> Option<String> {
+    // shortcut: Claude shortens very long folder names; worktree paths stay well under that.
+    let folder: String = path
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    std::fs::read_dir(projects.join(folder))
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .max()
+        .and_then(|(_, p)| Some(p.file_stem()?.to_str()?.to_string()))
+}
+
+/// Resume: In Orca while the card's worktree is there. Once it is removed, opens the card's
+/// Claude session again (`claude --resume`) in a new terminal in its repo's main folder, and
+/// brings Orca to the front. Plan mode: it reads back and answers but edits nothing in the user's
+/// checkout.
+pub(crate) async fn resume(
+    bin: &str,
+    saved: &Path,
+    projects: &Path,
+    link: &str,
+) -> Result<Value, String> {
+    let link = link.to_lowercase();
+    if worktrees(bin)
+        .await?
+        .iter()
+        .any(|w| cards_of(w).contains(&link))
+    {
+        return focus(bin, &link).await;
+    }
+    let file = saved.join(format!("{link}.json"));
+    let s: Value = std::fs::read(&file)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .ok_or_else(|| format!("no Orca session saved for {link}"))?;
+    let name = s["name"].as_str().unwrap_or(&link);
+    if s["agent"] != "claude" {
+        return Err(format!(
+            "{name} ran {}: only Claude sessions can be resumed",
+            s["agent"].as_str().unwrap_or("an unknown agent")
+        ));
+    }
+    let id = claude_session(projects, s["path"].as_str().unwrap_or_default())
+        .ok_or_else(|| format!("no Claude session found for {name}"))?;
+    let repo_id = s["worktree"]
+        .as_str()
+        .and_then(|w| w.split_once("::"))
+        .map_or("", |(r, _)| r);
+    let (repo, path) = repo_of(bin, repo_id).await?;
+    orca(
+        bin,
+        &[
+            "terminal",
+            "create",
+            "--worktree",
+            &format!("path:{path}"),
+            "--title",
+            &format!("Resume {name}"),
+            "--command",
+            &format!("claude --resume {} --permission-mode plan", sh(&id)),
+            "--focus",
+        ],
+    )
+    .await?;
+    raise(bin).await;
+    Ok(json!({"name": name, "repo": repo, "resumed": true}))
 }
 
 /// What the agent is told: research for spikes only, else fix, with a hint per snag, feature or
-/// spike. One line: a newline could submit a TUI prompt early.
-fn prompt(cards: &[&Card], base: &str) -> String {
+/// spike, and to save its result with `cli orca-report`. One line: a newline could submit a TUI
+/// prompt early.
+fn prompt(cards: &[&Card], base: &str, cli: &str) -> String {
     let urls: Vec<String> = cards.iter().map(|c| card_url(&c.link)).collect();
+    let links: Vec<&str> = cards.iter().map(|c| c.link.as_str()).collect();
+    let report = format!("{cli} orca-report {}", links.join(" "));
+    let reply = "--reply <a short plain-text comment for the Trello card or the client: what was wrong or asked, what changed, how it was checked>";
     let read = "1) Read each card with the Trello MCP tools: description, checklists, attachments and comments.";
     let release = "Never release a new version (make release, make release-ios, make release-android or any other release) unless the user asks.";
     if cards.iter().all(|c| c.kind == Kind::Spike) {
@@ -288,7 +372,9 @@ fn prompt(cards: &[&Card], base: &str) -> String {
             "Research {what} . Spikes: answer their questions without changing the code: no commit, no push, no pull request. {release} \
              {read} \
              2) Investigate in this worktree: read the code and run experiments, undoing any change they make. \
-             3) Report what you found, the options with their trade-offs and your recommendation, then stop and keep this worktree."
+             3) Report what you found, the options with their trade-offs and your recommendation, \
+             save it for the dashboard: {report} --status done --summary <the findings, the options and your recommendation> {reply} , \
+             then stop and keep this worktree."
         );
     }
     let cards_text = match urls.as_slice() {
@@ -312,13 +398,14 @@ fn prompt(cards: &[&Card], base: &str) -> String {
         "Fix {cards_text} . {hints}{release} \
          {read} \
          2) Make the change in this worktree; its branch was made from {base}. \
-         3) Run the project's tests and fix every failure. \
+         3) Run the project's tests and fix every failure. When the change shows on a screen, also check it end to end with a proofsheet flow run and keep the run's portal link. \
          4) Commit, push this branch and open a pull request into {base} (gh pr create --base {base}). \
          5) Wait for its checks (gh pr checks --watch) and fix and push until they pass. \
-         6) Then stop and ask the user to review the pull request: do not merge it, and keep this worktree and its branch, local and remote, until the user confirms with ok. If they ask for changes instead, make them, push and ask again. \
-         7) Only after the user confirms, merge the pull request with gh pr merge, using a merge method the repo allows. Do not pass --delete-branch: {base} is checked out in another worktree. \
-         8) Once it is merged, delete the remote branch if GitHub kept it, then, as the very last step, remove this worktree: orca worktree rm --worktree active --force . \
-         If a step fails and you cannot fix it, stop there, keep the worktree and the pull request, and say what is blocking."
+         6) Save your result for the dashboard: {report} --status review --pr <the pull request URL> --e2e <a run's portal link, once per e2e run, none if no e2e ran> --summary <what was wrong or asked, what you changed, the tests and e2e runs and their results> {reply} . \
+         7) Then stop and ask the user to review the pull request: do not merge it, and keep this worktree and its branch, local and remote, until the user confirms with ok. If they ask for changes instead, make them, push, save your result again and ask again. \
+         8) Only after the user confirms, merge the pull request with gh pr merge, using a merge method the repo allows. Do not pass --delete-branch: {base} is checked out in another worktree. \
+         9) Once it is merged, run {report} --status merged , delete the remote branch if GitHub kept it, then, as the very last step, remove this worktree: orca worktree rm --worktree active --force . \
+         If a step fails and you cannot fix it, stop there, keep the worktree and the pull request, run {report} --status blocked --summary <what is blocking> , and say what is blocking."
     )
 }
 
@@ -335,12 +422,92 @@ fn save_session(dir: &Path, links: &[&str], session: &Value) -> Result<(), Strin
     Ok(())
 }
 
+/// What `trello-mcp orca-report --status` takes: the pull request waits for the user's review, is
+/// merged, the spike is done, or a step is blocked.
+pub(crate) const REPORT_STATUSES: [&str; 4] = ["review", "merged", "done", "blocked"];
+
+/// `trello-mcp orca-report`: merges `fields` (status, pr, e2e, summary, reply; nulls are left
+/// out) into the report in each of `links`' saved sessions in `dir`, with the time. Links must be
+/// https: the page shows them as links.
+pub(crate) fn report(dir: &Path, links: &[&str], fields: &Value) -> Result<(), String> {
+    let status = fields["status"].as_str().unwrap_or_default();
+    if !REPORT_STATUSES.contains(&status) {
+        return Err(format!(
+            "status must be one of {}",
+            REPORT_STATUSES.join(", ")
+        ));
+    }
+    let urls = fields["pr"].as_str().into_iter().chain(
+        fields["e2e"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str),
+    );
+    for u in urls {
+        if !u.starts_with("https://") {
+            return Err(format!("{u}: links must start with https://"));
+        }
+    }
+    for link in links {
+        let file = dir.join(format!("{}.json", link.to_lowercase()));
+        let mut session: Value = std::fs::read(&file)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .ok_or_else(|| format!("no Orca session saved for {link} in {}", dir.display()))?;
+        let mut r = session["report"].as_object().cloned().unwrap_or_default();
+        for (k, v) in fields.as_object().into_iter().flatten() {
+            if !v.is_null() {
+                r.insert(k.clone(), v.clone());
+            }
+        }
+        r.insert("at".into(), json!(super::now() as i64));
+        session["report"] = json!(r);
+        save_session(dir, &[link], &session)?;
+    }
+    Ok(())
+}
+
+/// Every session saved in `dir`, newest first, once per worktree, with `state`: its agent's state
+/// in Orca from `live` (see `sessions`), or null once its worktree is gone.
+pub(crate) fn runs(dir: &Path, live: &[Value]) -> Vec<Value> {
+    let mut runs: Vec<Value> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| serde_json::from_slice(&std::fs::read(e.path()).ok()?).ok())
+        .collect();
+    runs.sort_by_key(|r: &Value| std::cmp::Reverse(r["sentAt"].as_i64().unwrap_or_default()));
+    let mut seen = std::collections::HashSet::new();
+    runs.retain(|r| seen.insert(r["worktree"].to_string()));
+    for r in &mut runs {
+        let cards: Vec<String> = r["cards"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| Some(c.as_str()?.rsplit('/').next()?.to_lowercase()))
+            .collect();
+        r["state"] = live
+            .iter()
+            .find(|s| {
+                s["card"]
+                    .as_str()
+                    .is_some_and(|c| cards.iter().any(|x| x == c))
+            })
+            .map_or(Value::Null, |s| s["state"].clone());
+    }
+    runs
+}
+
 /// Creates one worktree in `repo_id` for `cards`, in that order, with `agent` working through them
-/// in bypass mode, and saves the session in `saved` for each card. Cards that already have a
+/// in bypass mode, told to save its result with `cli orca-report`, and saves the session in
+/// `saved` for each card. Cards that already have a
 /// worktree in any repo are skipped: one card, one agent. When all have one, marks the first one's
 /// unread in Orca's sidebar and says so.
 pub(crate) async fn send(
     bin: &str,
+    cli: &str,
     repo_id: &str,
     agent: &str,
     cards: &[Card],
@@ -424,7 +591,8 @@ pub(crate) async fn send(
         ],
     )
     .await;
-    let command = format!("{launch} {}", sh(&prompt(&fresh, &base)));
+    let cli = if cli.is_empty() { "trello-mcp" } else { cli };
+    let command = format!("{launch} {}", sh(&prompt(&fresh, &base, cli)));
     let term = orca(
         bin,
         &[
@@ -442,8 +610,8 @@ pub(crate) async fn send(
         "path": wt["path"], "skipped": skipped, "worktree": wt_id,
         "terminal": term["terminal"]["handle"]});
     let session = json!({"worktree": wt_id, "terminal": v["terminal"], "repo": repo_name,
-        "name": name, "base": base, "agent": agent, "path": wt["path"], "cards": urls,
-        "sentAt": super::now() as i64});
+        "name": name, "title": title.join(" + "), "base": base, "agent": agent, "path": wt["path"],
+        "cards": urls, "sentAt": super::now() as i64});
     // The agent is already on it: a save that fails is reported, not a failed send.
     if let Err(e) = save_session(saved, &links, &session) {
         v["warning"] = json!(e);
@@ -470,7 +638,7 @@ pub(crate) async fn send_selected(
         .collect();
     match fresh.len() {
         0 => Err("every picked card is already in Orca".into()),
-        1 => send(bin, repo_id, agent, &fresh, saved).await,
+        1 => send(bin, cli, repo_id, agent, &fresh, saved).await,
         _ => plan(bin, cli, repo_id, agent, &fresh).await,
     }
 }
@@ -596,6 +764,7 @@ esac
         let saved = dir.path().join("saved");
         let v = send(
             &bin,
+            "/x/trello-mcp",
             "r1",
             "agy",
             &[card("AbCd1234", "#348 Block physical address")],
@@ -651,7 +820,10 @@ esac
                 && p.contains("gh pr merge")
                 && p.contains("do not merge it")
                 && p.contains("until the user confirms")
-                && p.contains("orca worktree rm --worktree active"),
+                && p.contains("orca worktree rm --worktree active")
+                && p.contains("/x/trello-mcp orca-report AbCd1234 --status review --pr")
+                && p.contains("/x/trello-mcp orca-report AbCd1234 --status merged")
+                && p.contains("proofsheet"),
             "{words:?}"
         );
         let session: Value =
@@ -710,33 +882,35 @@ esac
             ..card(link, "#1 x")
         };
         let snag = with("AbCd1234", Kind::Snag);
-        let p = prompt(&[&snag], "dev");
+        let p = prompt(&[&snag], "dev", "trello-mcp");
         assert!(
             p.starts_with("Fix the Trello card https://trello.com/c/AbCd1234 . It is a snag (a bug): reproduce it first")
                 && p.contains("gh pr merge")
                 && p.contains("Never release a new version (make release, make release-ios, make release-android"),
             "{p}"
         );
-        let plain = prompt(&[&card("AbCd1234", "#1 x")], "dev");
+        let plain = prompt(&[&card("AbCd1234", "#1 x")], "dev", "trello-mcp");
         assert!(
             plain.starts_with("Fix the Trello card https://trello.com/c/AbCd1234 . Never release"),
             "{plain}"
         );
 
         let spike = with("Ef56Gh78", Kind::Spike);
-        let p = prompt(&[&spike], "dev");
+        let p = prompt(&[&spike], "dev", "trello-mcp");
         assert!(
             p.starts_with(
                 "Research the Trello card https://trello.com/c/Ef56Gh78 . Spikes: answer"
             ) && !p.contains("gh pr")
+                && p.contains("trello-mcp orca-report Ef56Gh78 --status done")
                 && p.contains("keep this worktree")
                 && p.contains("Never release"),
             "{p}"
         );
         // A spike in a group with code to change: the group still ships, the spike gets a note.
-        let p = prompt(&[&snag, &spike], "dev");
+        let p = prompt(&[&snag, &spike], "dev", "trello-mcp");
         assert!(
             p.starts_with("Fix the Trello cards https://trello.com/c/AbCd1234 https://trello.com/c/Ef56Gh78 , one after another")
+                && p.contains("trello-mcp orca-report AbCd1234 Ef56Gh78 --status blocked")
                 && p.contains("https://trello.com/c/AbCd1234 is a snag")
                 && p.contains("https://trello.com/c/Ef56Gh78 is a spike")
                 && p.contains("gh pr merge"),
@@ -779,6 +953,155 @@ esac
     }
 
     #[test]
+    fn a_report_merges_into_each_cards_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = json!({"worktree": "r1::/wt/trello-AbCd1234-Ef56Gh78", "name": "trello-AbCd1234-Ef56Gh78"});
+        save_session(dir.path(), &["AbCd1234", "Ef56Gh78"], &session).unwrap();
+        let first = json!({"status": "review", "pr": "https://github.com/o/r/pull/1",
+            "e2e": ["https://calibrate.proofsheet.dev/runs/1"], "summary": "fixed", "reply": "done"});
+        report(dir.path(), &["AbCd1234", "Ef56Gh78"], &first).unwrap();
+        // A later status keeps what was saved before.
+        let merged = json!({"status": "merged", "pr": null, "e2e": null});
+        report(dir.path(), &["abcd1234"], &merged).unwrap();
+        let read = |link: &str| -> Value {
+            serde_json::from_slice(&std::fs::read(dir.path().join(format!("{link}.json"))).unwrap())
+                .unwrap()
+        };
+        let r = &read("abcd1234")["report"];
+        assert_eq!(
+            (&r["status"], &r["pr"], &r["e2e"][0], &r["reply"]),
+            (
+                &json!("merged"),
+                &json!("https://github.com/o/r/pull/1"),
+                &json!("https://calibrate.proofsheet.dev/runs/1"),
+                &json!("done")
+            ),
+            "{r}"
+        );
+        assert!(r["at"].as_i64().unwrap() > 0);
+        assert_eq!(read("ef56gh78")["report"]["status"], "review");
+        assert_eq!(read("abcd1234")["name"], "trello-AbCd1234-Ef56Gh78");
+
+        let bad = |fields: Value| report(dir.path(), &["AbCd1234"], &fields).unwrap_err();
+        assert!(bad(json!({"status": "finished"})).starts_with("status must be one of"));
+        assert!(bad(json!({"status": "review", "pr": "javascript:alert(1)"})).contains("https://"));
+        assert!(bad(json!({"status": "review", "e2e": ["file:///x"]})).contains("https://"));
+        assert!(
+            report(dir.path(), &["Ij90Kl12"], &json!({"status": "done"}))
+                .unwrap_err()
+                .starts_with("no Orca session saved for Ij90Kl12")
+        );
+    }
+
+    #[test]
+    fn runs_are_newest_first_once_per_worktree_with_their_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = json!({"worktree": "r1::/wt/trello-AbCd1234", "sentAt": 1,
+            "cards": ["https://trello.com/c/AbCd1234"], "report": {"status": "merged"}});
+        let group = json!({"worktree": "r1::/wt/trello-Ef56Gh78-Ij90Kl12", "sentAt": 2,
+            "cards": ["https://trello.com/c/Ef56Gh78", "https://trello.com/c/Ij90Kl12"]});
+        save_session(dir.path(), &["AbCd1234"], &old).unwrap();
+        save_session(dir.path(), &["Ef56Gh78", "Ij90Kl12"], &group).unwrap();
+        std::fs::write(dir.path().join("broken.json"), "{").unwrap();
+        let live = [json!({"card": "ij90kl12", "state": "working"})];
+        let got = runs(dir.path(), &live);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(
+            (&got[0]["worktree"], &got[0]["state"]),
+            (&group["worktree"], &json!("working"))
+        );
+        assert_eq!(
+            (&got[1]["report"]["status"], &got[1]["state"]),
+            (&json!("merged"), &Value::Null)
+        );
+        assert_eq!(runs(&dir.path().join("none"), &[]), Vec::<Value>::new());
+    }
+
+    #[test]
+    fn the_claude_session_is_the_last_one_in_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("-wt-app-trello-AbCd1234");
+        std::fs::create_dir_all(folder.join("old-id")).unwrap();
+        std::fs::write(folder.join("old-id.jsonl"), "").unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(folder.join("new-id.jsonl"), "").unwrap();
+        assert_eq!(
+            claude_session(dir.path(), "/wt/app/trello-AbCd1234").as_deref(),
+            Some("new-id")
+        );
+        assert_eq!(
+            claude_session(dir.path(), "/wt/app_trello-AbCd1234").as_deref(),
+            Some("new-id")
+        );
+        assert_eq!(claude_session(dir.path(), "/wt/other"), None);
+    }
+
+    #[tokio::test]
+    #[ignore = "starts processes, which macOS can freeze after the procs scan test launches a fresh binary: cargo test -- --ignored orca"]
+    async fn resume_opens_a_removed_worktrees_claude_session_in_the_main_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_orca(dir.path());
+        let (saved, projects) = (dir.path().join("saved"), dir.path().join("projects"));
+        assert_eq!(
+            resume(&bin, &saved, &projects, "AbCd1234")
+                .await
+                .unwrap_err(),
+            "no Orca session saved for abcd1234"
+        );
+        let session = json!({"worktree": "r1::/wt/trello-AbCd1234", "name": "trello-AbCd1234",
+            "agent": "codex", "path": "/wt/trello-AbCd1234"});
+        save_session(&saved, &["AbCd1234"], &session).unwrap();
+        assert_eq!(
+            resume(&bin, &saved, &projects, "AbCd1234")
+                .await
+                .unwrap_err(),
+            "trello-AbCd1234 ran codex: only Claude sessions can be resumed"
+        );
+        let mut session = session;
+        session["agent"] = json!("claude");
+        save_session(&saved, &["AbCd1234"], &session).unwrap();
+        assert_eq!(
+            resume(&bin, &saved, &projects, "AbCd1234")
+                .await
+                .unwrap_err(),
+            "no Claude session found for trello-AbCd1234"
+        );
+        let folder = projects.join("-wt-trello-AbCd1234");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("5e1d-id.jsonl"), "").unwrap();
+        assert_eq!(
+            resume(&bin, &saved, &projects, "AbCd1234").await.unwrap(),
+            json!({"name": "trello-AbCd1234", "repo": "app", "resumed": true})
+        );
+        let calls = logged(dir.path());
+        let term = calls
+            .iter()
+            .find(|c| c[..2] == ["terminal", "create"])
+            .unwrap();
+        let repo = dir.path().join("repo");
+        assert_eq!(flag(term, "--worktree"), format!("path:{}", repo.display()));
+        assert_eq!(
+            flag(term, "--command"),
+            "claude --resume '5e1d-id' --permission-mode plan"
+        );
+        assert!(term.contains(&"--focus".to_string()));
+
+        // While the worktree is there, Resume is In Orca.
+        std::fs::write(
+            dir.path().join("worktrees.json"),
+            r##"{"ok":true,"result":{"worktrees":[
+                {"worktreeId":"r1::/wt/trello-abcd1234","repo":"app","displayName":"#1 x","path":"/wt/trello-abcd1234"}]}}"##,
+        )
+        .unwrap();
+        assert_eq!(
+            resume(&bin, &saved, &projects, "AbCd1234")
+                .await
+                .unwrap_err(),
+            "#1 x has no terminal open in Orca"
+        );
+    }
+
+    #[test]
     fn shell_words_keep_quotes() {
         assert_eq!(sh("it's 'x'"), r#"'it'\''s '\''x'\'''"#);
     }
@@ -796,6 +1119,7 @@ esac
         .unwrap();
         let v = send(
             &bin,
+            "/x/trello-mcp",
             "r1",
             "claude",
             &[
@@ -931,9 +1255,16 @@ esac
         )
         .unwrap();
         // Not even in another repo.
-        let v = send(&bin, "r1", "codex", &[card("AbCd1234", "#1 x")], dir.path())
-            .await
-            .unwrap();
+        let v = send(
+            &bin,
+            "/x/trello-mcp",
+            "r1",
+            "codex",
+            &[card("AbCd1234", "#1 x")],
+            dir.path(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             v,
             json!({"existing": true, "name": "trello-AbCd1234", "repo": "web", "path": "/wt/other"})
@@ -994,16 +1325,24 @@ esac
         let dir = tempfile::tempdir().unwrap();
         let bin = fake_orca(dir.path());
         assert!(
-            send(&bin, "r1", "bash", &[card("AbCd1234", "#1 x")], dir.path())
-                .await
-                .unwrap_err()
-                .contains("unknown agent")
+            send(
+                &bin,
+                "/x/trello-mcp",
+                "r1",
+                "bash",
+                &[card("AbCd1234", "#1 x")],
+                dir.path()
+            )
+            .await
+            .unwrap_err()
+            .contains("unknown agent")
         );
         assert!(logged(dir.path()).is_empty(), "nothing ran");
         for repo in ["nope", "f1"] {
             assert!(
                 send(
                     &bin,
+                    "/x/trello-mcp",
                     repo,
                     "claude",
                     &[card("AbCd1234", "#1 x")],
