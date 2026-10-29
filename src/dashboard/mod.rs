@@ -312,6 +312,7 @@ pub(crate) fn router(dash: Arc<Dash>, tailnet: bool) -> Router {
         .route("/api/orca/repos", get(orca_repos))
         .route("/api/orca/sessions", get(orca_sessions))
         .route("/api/orca/send", post(orca_send))
+        .route("/api/orca/focus", post(orca_focus))
         .fallback(|| async { http_error(StatusCode::NOT_FOUND, "404 page not found") })
         .layer(middleware::from_fn_with_state(
             (dash.clone(), tailnet),
@@ -713,6 +714,24 @@ async fn orca_send(
         orca::send(&dash.orca, get("repo"), get("agent"), &cards, &dash.saved).await
     };
     match sent {
+        Ok(v) => json_ok(&v),
+        Err(e) => json_ok(&json!({"error": e})),
+    }
+}
+
+/// In Orca (?card=<card link>): shows the card's worktree and agent in Orca. Only our page.
+async fn orca_focus(
+    State(dash): State<Arc<Dash>>,
+    h: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !dash.is_ours(&h) {
+        return http_error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let Some(Ok(feeds::Query::Link(link))) = q.get("card").map(|c| feeds::classify(c)) else {
+        return http_error(StatusCode::BAD_REQUEST, "card must be a Trello card link");
+    };
+    match orca::focus(&dash.orca, &link).await {
         Ok(v) => json_ok(&v),
         Err(e) => json_ok(&json!({"error": e})),
     }
@@ -1223,6 +1242,12 @@ mod tests {
         for path in ["/api/orca/repos", "/api/orca/sessions"] {
             assert_eq!(call(&us, "GET", path, &mine[..1]).await.0, 403, "{path}");
         }
+        let focus = "/api/orca/focus?card=https%3A%2F%2Ftrello.com%2Fc%2Faaaa1111";
+        assert_eq!(call(&us, "POST", focus, &mine[..1]).await.0, 403);
+        assert_eq!(call(&us, "GET", focus, &mine).await.0, 405);
+        for bad in ["/api/orca/focus", "/api/orca/focus?card=hello"] {
+            assert_eq!(call(&us, "POST", bad, &mine).await.0, 400, "{bad}");
+        }
         assert_eq!(
             call(&us, "POST", "/api/project?id=b1&enabled=1", &mine[..1])
                 .await
@@ -1351,6 +1376,7 @@ mod tests {
             "/api/orca/repos",
             "/api/orca/sessions",
             "/api/orca/send",
+            "/api/orca/focus",
             "X-Trello-MCP",
             "open-groups",
             "localStorage",

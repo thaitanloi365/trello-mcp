@@ -516,15 +516,24 @@ async function postJSON(url) {
   if (d.error) throw new Error(d.error);
   return d;
 }
-// A card already in Orca (`s`, its session) shows In Orca: a send only marks it unread there.
+// A card already in Orca (`s`, its session) shows In Orca: a click shows its agent there.
 function sendBtn(c, s) {
   const label = s ? 'In Orca' : 'Send to Orca';
   const b = el('button', s ? 'btn sm' : 'btn sm primary', label);
   b.type = 'button';
-  if (s) b.title = `${s.name} (${s.id}): mark it unread in Orca`;
+  if (s) b.title = `${s.name} (${s.id}): show it in Orca`;
   b.addEventListener('click', async () => {
+    if (s) {
+      try {
+        const d = await postJSON('/api/orca/focus?' + new URLSearchParams({ card: c.url }));
+        orcaStatus(`Showing ${d.name} in Orca.`);
+      } catch (e) {
+        orcaStatus(`${number(c)}: ${e.message}`, true);
+      }
+      return;
+    }
     const repo = $('repo').value, agent = $('agent').value;
-    if (!repo && !s) { orcaStatus('Pick the repo for this project first.', true); repoBox.btn.focus(); return; }
+    if (!repo) { orcaStatus('Pick the repo for this project first.', true); repoBox.btn.focus(); return; }
     b.disabled = true;
     b.textContent = 'Sending…';
     try {
@@ -533,6 +542,7 @@ function sendBtn(c, s) {
       orcaStatus(d.existing
         ? `${number(c)} already has ${d.name} in ${d.repo}: marked unread in Orca.`
         : join(`${agent} is on ${number(c)} in ${d.name}, from ${d.base}.`, d.warning));
+      loadBoard(true);
     } catch (e) {
       b.textContent = label;
       b.disabled = false;

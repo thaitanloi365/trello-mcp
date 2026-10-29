@@ -233,6 +233,43 @@ pub(crate) async fn sessions(bin: &str) -> Result<Vec<Value>, String> {
     Ok(worktrees(bin).await?.iter().flat_map(sessions_of).collect())
 }
 
+/// In Orca: shows the worktree of the card `link` on its first agent's terminal, else its first
+/// terminal, and brings Orca to the front.
+pub(crate) async fn focus(bin: &str, link: &str) -> Result<Value, String> {
+    let wts = worktrees(bin).await?;
+    let wt = wts
+        .iter()
+        .find(|w| cards_of(w).contains(&link.to_lowercase()))
+        .ok_or_else(|| format!("{link} is not in Orca"))?;
+    let id = format!("id:{}", wt["worktreeId"].as_str().unwrap_or_default());
+    let terms = orca(bin, &["terminal", "list", "--worktree", &id]).await?;
+    let terms = terms["terminals"].as_array().cloned().unwrap_or_default();
+    // An agent's pane key is its terminal's `<tabId>:<leafId>`.
+    let pane = wt["agents"][0]["paneKey"]
+        .as_str()
+        .and_then(|k| k.split_once(':'));
+    let term = terms
+        .iter()
+        .find(|t| pane.is_some_and(|(tab, leaf)| t["tabId"] == tab && t["leafId"] == leaf))
+        .or(terms.first())
+        .and_then(|t| t["handle"].as_str())
+        .ok_or_else(|| {
+            let name = wt["displayName"].as_str().unwrap_or(link);
+            format!("{name} has no terminal open in Orca")
+        })?;
+    orca(bin, &["terminal", "switch", "--terminal", term]).await?;
+    // shortcut: an `orca` outside an app bundle (on PATH) leaves Orca where it is; Orca.app's own
+    // copy is the default.
+    if let Some((app, _)) = bin.split_once(".app/") {
+        let _ = output(
+            Command::new("open").args(["-a", &format!("{app}.app")]),
+            "open",
+        )
+        .await;
+    }
+    Ok(json!({"name": wt["displayName"], "repo": wt["repo"]}))
+}
+
 /// What the agent is told: research for spikes only, else fix, with a hint per snag, feature or
 /// spike. One line: a newline could submit a TUI prompt early.
 fn prompt(cards: &[&Card], base: &str) -> String {
@@ -494,8 +531,9 @@ pub(crate) mod tests {
     use super::*;
 
     /// A stand-in `orca` in `dir` that logs each call's arguments, one per line, to `dir/log` and
-    /// answers `worktree ps` with `dir/worktrees.json`; its one repo, r1, is a git repo on
-    /// branch feature-x. Sessions are saved in `dir/saved`.
+    /// answers `worktree ps` with `dir/worktrees.json` and `terminal list` with
+    /// `dir/terminals.json`; its one repo, r1, is a git repo on branch feature-x. Sessions are
+    /// saved in `dir/saved`.
     pub(crate) fn fake_orca(dir: &Path) -> String {
         let repo = dir.join("repo");
         let git = std::process::Command::new("git")
@@ -509,6 +547,11 @@ pub(crate) mod tests {
             r#"{"ok":true,"result":{"worktrees":[]}}"#,
         )
         .unwrap();
+        std::fs::write(
+            dir.join("terminals.json"),
+            r#"{"ok":true,"result":{"terminals":[]}}"#,
+        )
+        .unwrap();
         let d = dir.display();
         let script = format!(
             r#"#!/bin/sh
@@ -516,6 +559,7 @@ printf '%s\n' "$@" >> '{d}/log'; echo --- >> '{d}/log'
 case "$1 $2" in
   "repo list") echo '{{"ok":true,"result":{{"repos":[{{"id":"r1","kind":"git","displayName":"app","path":"{repo}"}},{{"id":"f1","kind":"folder","displayName":"notes","path":"/n"}}]}}}}' ;;
   "worktree ps") cat '{d}/worktrees.json' ;;
+  "terminal list") cat '{d}/terminals.json' ;;
   "worktree create") echo '{{"ok":true,"result":{{"worktree":{{"id":"r1::/wt/trello-AbCd1234","path":"/wt/trello-AbCd1234"}}}}}}' ;;
   "terminal create") echo '{{"ok":true,"result":{{"terminal":{{"handle":"term_1"}}}}}}' ;;
   *) echo '{{"ok":true,"result":{{}}}}' ;;
@@ -899,6 +943,49 @@ esac
         let set = calls.iter().find(|c| c[1] == "set").unwrap();
         assert_eq!(flag(set, "--worktree"), "id:r2::/wt/other");
         assert!(set.contains(&"--unread".to_string()));
+    }
+
+    #[tokio::test]
+    #[ignore = "starts processes, which macOS can freeze after the procs scan test launches a fresh binary: cargo test -- --ignored orca"]
+    async fn in_orca_shows_the_cards_agent_terminal() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_orca(dir.path());
+        let write = |file: &str, body: &str| std::fs::write(dir.path().join(file), body).unwrap();
+        write(
+            "worktrees.json",
+            r##"{"ok":true,"result":{"worktrees":[
+                {"worktreeId":"r1::/wt/trello-abcd1234","repo":"app","displayName":"#1 x","path":"/wt/trello-abcd1234",
+                 "agents":[{"paneKey":"t2:l2"}]}]}}"##,
+        );
+        assert_eq!(
+            focus(&bin, "AbCd1234").await.unwrap_err(),
+            "#1 x has no terminal open in Orca"
+        );
+        write(
+            "terminals.json",
+            r#"{"ok":true,"result":{"terminals":[
+                {"handle":"term_shell","tabId":"t1","leafId":"l1"},
+                {"handle":"term_agent","tabId":"t2","leafId":"l2"}]}}"#,
+        );
+        assert_eq!(
+            focus(&bin, "AbCd1234").await.unwrap(),
+            json!({"name": "#1 x", "repo": "app"})
+        );
+        let calls = logged(dir.path());
+        let list = calls
+            .iter()
+            .find(|c| c[..2] == ["terminal", "list"])
+            .unwrap();
+        assert_eq!(flag(list, "--worktree"), "id:r1::/wt/trello-abcd1234");
+        let switch = calls
+            .iter()
+            .find(|c| c[..2] == ["terminal", "switch"])
+            .unwrap();
+        assert_eq!(flag(switch, "--terminal"), "term_agent");
+        assert_eq!(
+            focus(&bin, "Ef56Gh78").await.unwrap_err(),
+            "Ef56Gh78 is not in Orca"
+        );
     }
 
     #[tokio::test]

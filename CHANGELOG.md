@@ -32,6 +32,9 @@ All notable changes to this project are documented in this file.
 - Dashboard: a card already sent to Orca shows its repo, agent and state and an In Orca button,
   also after a reload (Orca's `worktree ps`). Send to Orca refuses a card's second worktree in any
   repo, not only the picked one.
+- Dashboard: a sent card turns to In Orca without a reload. In Orca shows the card's worktree on
+  its agent's terminal and brings Orca to the front (`POST /api/orca/focus`), instead of marking
+  it unread.
 - Dashboard: tick cards and Copy links (one link per line) or Send selected. Several cards start a
   Claude planner in Orca that groups related cards and starts one fresh session per group (one
   worktree and pull request each) through the new `trello-mcp orca-send`.

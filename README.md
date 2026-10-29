@@ -268,7 +268,8 @@ project's repos from Config, else the repos matching its name (LiveLaunch: `live
 all; pick the repo once per project. The worktree is
 `trello-<card short link>`, so a card never gets two, in any repo: a second send marks the existing
 one unread in Orca. A card already in Orca shows its repo, agent and state (`Orca: ahai_backend,
-claude · working`) and an In Orca button in place of Send to Orca, also after a reload.
+claude · working`) and an In Orca button in place of Send to Orca, as soon as the send is done.
+In Orca shows the card's worktree on its agent's terminal and brings Orca to the front.
 It branches from whatever the repo's main folder has checked out. The agent is told to
 read the card, make the change, run the tests and open a pull request into that branch. Then it
 stops for your review: only after you reply ok does it merge the pull request, delete the branch
