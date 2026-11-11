@@ -274,6 +274,8 @@ fn codex_block(
         .and_then(|t| t.as_table_mut())
         .ok_or_else(|| Error::Invalid("generated codex config is invalid".into()))?;
     let mut extras = false;
+    // A switch between a command and a URL drops the old table: its fields belong to the old kind.
+    let old = old.filter(|o| o.contains_key("url") == ours.contains_key("url"));
     for (k, v) in old.into_iter().flatten() {
         if !ours.contains_key(k) {
             ours.insert(k.clone(), v.clone());
@@ -301,12 +303,12 @@ fn merge_codex(content: &str, generated: &str, label: &str, eol: &str) -> Result
             .collect()
     };
     let (begins, ends) = (marked(CODEX_MANAGED_BEGIN), marked(CODEX_MANAGED_END));
-    let runs_trello_mcp = table
-        .get("mcp_servers")
-        .and_then(|m| m.get("trello"))
-        .and_then(|t| t.get("command"))
-        .and_then(|c| c.as_str())
-        .is_some_and(|c| Path::new(c).file_name().is_some_and(|n| n == "trello-mcp"));
+    let trello = table.get("mcp_servers").and_then(|m| m.get("trello"));
+    let text = |key: &str| trello.and_then(|t| t.get(key)).and_then(|v| v.as_str());
+    // Ours: it starts trello-mcp, or it points at the shared server.
+    let runs_trello_mcp = text("command")
+        .is_some_and(|c| Path::new(c).file_name().is_some_and(|n| n == "trello-mcp"))
+        || text("url").is_some_and(|u| u.starts_with("http://127.0.0.1:") && u.contains("/mcp/"));
 
     // Our region [from, to), and the old marker lines to delete.
     let (region, strays) = match (begins.as_slice(), ends.as_slice()) {
@@ -450,6 +452,7 @@ mod tests {
         Options {
             command: "/opt/trello/bin/trello-mcp".into(),
             config_path: "/home/user/.trello-mcp/config.json".into(),
+            url: String::new(),
         }
     }
 

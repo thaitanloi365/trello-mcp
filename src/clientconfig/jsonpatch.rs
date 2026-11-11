@@ -252,6 +252,9 @@ fn put(text: &str, open: usize, path: &[&str], value: &Value, ctx: &Ctx) -> Res<
     }
 }
 
+/// The fields that make an entry a URL one.
+const URL_KEYS: [&str; 2] = ["url", "serverUrl"];
+
 /// Sets `container.name = entry`. When `name` already holds an object, only
 /// the fields of `entry` are written, so the user's own extra keys survive;
 /// an existing `enabled` is never overridden.
@@ -277,6 +280,14 @@ pub(super) fn patch(
         return put(&out, open, &base, entry, &ctx);
     };
     if out.as_bytes()[s] != b'{' {
+        return put(&out, open, &base, entry, &ctx);
+    }
+    // A switch between a command and a URL replaces the entry: the old kind's fields must go.
+    let mut was_url = false;
+    for k in URL_KEYS {
+        was_url |= lookup(&out, &[container, name, k])?.is_some();
+    }
+    if was_url != URL_KEYS.iter().any(|k| fields.contains_key(*k)) {
         return put(&out, open, &base, entry, &ctx);
     }
     for (k, v) in fields {

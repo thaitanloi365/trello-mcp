@@ -110,6 +110,9 @@ enum Command {
         /// path clients should use to start trello-mcp
         #[arg(long)]
         command: Option<String>,
+        /// connect to the one server the dashboard runs, instead of one server per session
+        #[arg(long)]
+        shared: bool,
     },
     /// Pull the latest source and rebuild this binary
     Update {
@@ -269,6 +272,7 @@ fn run(
             scope,
             project_dir,
             command,
+            shared,
         }) => {
             if all && client.is_some() {
                 bail!("--all cannot be combined with a client");
@@ -287,7 +291,14 @@ fn run(
                 (false, Some(client)) => vec![client],
                 (false, None) => bail!("setup requires a client or --all"),
             };
-            let options = resolve_client_options(command.as_deref(), &config_path)?;
+            let mut options = resolve_client_options(command.as_deref(), &config_path)?;
+            if shared {
+                // The URL holds a secret: it must not land in a file a repo may commit.
+                if scope != "user" {
+                    bail!("--shared needs --scope user");
+                }
+                options.url = dashboard::mcp_url(&config_path)?;
+            }
             let mut written = Vec::new();
             for client in &clients {
                 let target = if scope == "user" {
@@ -445,6 +456,7 @@ fn resolve_client_options(
     Ok(clientconfig::Options {
         command: command.to_string_lossy().into_owned(),
         config_path,
+        url: String::new(),
     })
 }
 
@@ -482,7 +494,10 @@ fn serve(config_path: &str) -> anyhow::Result<()> {
     let manager = Arc::new(config::Manager::new(config_path)?);
     manager.effective()?.validate(true)?;
     let result = runtime.block_on(async {
-        let server = mcp::Server::new(Arc::new(trello::Client::new(manager)));
+        let mut server = mcp::Server::new(Arc::new(trello::Client::new(manager)));
+        if let Some(dir) = config::resolve_path(config_path)?.parent() {
+            server = server.with_log(dir);
+        }
         let service = server.serve(rmcp::transport::stdio()).await?;
         tokio::select! {
             result = service.waiting() => { result?; }

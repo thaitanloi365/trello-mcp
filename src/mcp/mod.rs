@@ -13,6 +13,7 @@ mod card;
 mod extras;
 pub(crate) mod feeds;
 mod handlers;
+pub(crate) mod log;
 mod server;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -43,11 +44,19 @@ pub(crate) fn msg(text: impl Into<String>) -> Error {
 #[derive(Clone)]
 pub struct Server {
     pub(crate) client: Arc<trello::Client>,
+    /// The call log's file; None logs nothing.
+    pub(crate) log: Option<Arc<std::path::PathBuf>>,
 }
 
 impl Server {
     pub fn new(client: Arc<trello::Client>) -> Self {
-        Self { client }
+        Self { client, log: None }
+    }
+
+    /// Logs every tool call to `<dir>/calls.log`, `dir` being the config file's folder.
+    pub fn with_log(mut self, dir: &std::path::Path) -> Self {
+        self.log = Some(Arc::new(dir.join(log::FILE)));
+        self
     }
 }
 

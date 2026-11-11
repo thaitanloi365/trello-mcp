@@ -139,6 +139,29 @@ If the current folder already has a project setup of trello-mcp, `setup` prints
 a note that clients there may load trello twice; remove those project entries or
 keep using `--scope project`.
 
+#### One server for every session
+
+By default each client session starts its own `trello-mcp serve`. With the
+dashboard running (the menu bar app keeps it running), `--shared` points the
+clients at the one server inside it instead:
+
+```sh
+trello-mcp setup --all --shared
+```
+
+Restart the clients afterwards. Run `setup` again without `--shared` to go
+back. Notes:
+
+- The shared server only answers while the dashboard runs, on its default
+  address.
+- The URL carries a secret, kept in `mcp-token` beside the config file, so
+  `--shared` is user scope only.
+- `TRELLO_*` variables set on a client's entry no longer apply: pass `boardId`
+  to the tool instead.
+- Relative file paths (`add_attachment`, `download_attachment`) resolve against
+  the dashboard's folder: use absolute paths.
+- Claude Desktop cannot connect to a URL and keeps its own server.
+
 Upgrading: earlier releases set up the project folder by default. Pass
 `--scope project` to keep that behavior.
 
@@ -251,13 +274,18 @@ Log: `~/Library/Logs/trello-mcp-tray.log`. `make tray-test` runs its selftest.
 
 `trello-mcp dashboard` serves a page on http://127.0.0.1:8790 with:
 - Trello card search, by words, a card URL, or a card number in the picked project;
-- six tabs, each loading on its own; Refresh reloads the open one:
+- the shared MCP server for clients set up with `setup --shared` (see above);
+- seven tabs, each loading on its own; Refresh reloads the open one:
   - Waiting on you: the @mentions from the last 30 days you haven't commented after, on cards in a
     "Ready for dev", "In progress" or "Testing" list, each with a Copy comment link button;
   - Ready for dev and In progress: the cards of one project (a board in the allowed workspaces),
     loaded only when you pick it. The project, repo and agent pickers are searchable;
   - Orca runs: each card sent to Orca and the result its agent saved (see below);
   - Servers: the tray's server table;
+  - Logs: the last 500 tool calls of every server, shared or not, with the client, tool, card,
+    list or board, time taken and any error; filter by client or errors only. The calls are in
+    `calls.log` beside the config file (2 MB, then one older file); comment and description
+    text is never logged;
   - Config: tick the projects to fetch and map each to its Orca repos. Only enabled projects are
     fetched (the project picker, Waiting on you, search); with none enabled, all are. Saved in
     `dashboard.json` beside the config file.
@@ -390,6 +418,9 @@ card, drafts a reply in that style, and posts it only after you approve.
 - `add_attachment` can read a local file explicitly named by the MCP
   caller. `download_attachment` can write to an explicit destination whose
   parent directory already exists. Both enforce `max_upload_bytes`.
+- Every tool call is logged to `calls.log` beside the config file: the client, the tool, the
+  card, list or board it names, and any error. Other arguments are not logged.
+- The shared server (`setup --shared`) listens on loopback only, behind a secret in its URL.
 - Trello credentials are never included in HTTP error messages or health tool
   output.
 - `TRELLO_ALLOWED_WORKSPACES` or `allowed_workspace_ids` can restrict the

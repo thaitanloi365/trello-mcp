@@ -129,6 +129,14 @@ button.sg { width: 100%; min-height: 40px; padding: 0; font: inherit; font-size:
 .sg .lab .t { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .sg .lab .n { color: var(--muted); font-weight: 400; font-size: 13px; white-space: nowrap; }
 .chev { width: 12px; flex: none; font-size: 10px; color: var(--muted); }
+.lg { display: grid; grid-template-columns: 150px minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr) 64px; gap: 10px; align-items: baseline; padding: 7px 0; font-size: 14px; border-bottom: 1px solid var(--hair); overflow-wrap: anywhere; }
+.lg.th { border-bottom-color: var(--ink); }
+.lg .r { text-align: right; }
+.lg .bad { grid-column: 2 / -1; color: var(--red-ink); font-size: 12.5px; }
+.logbar select { max-width: 100%; }
+.logbar label { min-width: 0; }
+@media (max-width: 640px) { .lg { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .lg.th { display: none; } .lg .bad { grid-column: 1 / -1; } .lg .r { text-align: left; } }
+.logbar { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; margin: 14px 0 6px; font-size: 14px; }
 .sg.srv { min-height: 38px; border-bottom: 1px solid var(--hair); }
 .sg .b { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .bold { font-weight: 700; }
@@ -180,6 +188,7 @@ button.sg { width: 100%; min-height: 40px; padding: 0; font: inherit; font-size:
     <button class="tab" type="button" role="tab" id="tab-progress" aria-controls="lists-panel" data-tab="progress">In progress <span class="n" id="progress-n"></span></button>
     <button class="tab" type="button" role="tab" id="tab-runs" aria-controls="runs-panel" data-tab="runs">Orca runs <span class="n" id="runs-n"></span></button>
     <button class="tab" type="button" role="tab" id="tab-servers" aria-controls="servers-panel" data-tab="servers">Servers <span class="n" id="servers-n"></span></button>
+    <button class="tab" type="button" role="tab" id="tab-logs" aria-controls="logs-panel" data-tab="logs">Logs <span class="n" id="logs-n"></span></button>
     <button class="tab" type="button" role="tab" id="tab-config" aria-controls="config-panel" data-tab="config">Config</button>
   </div>
 
@@ -210,6 +219,15 @@ button.sg { width: 100%; min-height: 40px; padding: 0; font: inherit; font-size:
   <section id="servers-panel" role="tabpanel" aria-labelledby="tab-servers" hidden>
     <p class="note">Live, every 2 s.</p>
     <div id="servers"></div>
+  </section>
+
+  <section id="logs-panel" role="tabpanel" aria-labelledby="tab-logs" hidden>
+    <p class="note">The last 500 tool calls from every trello-mcp server, newest first. Comment and description text is never logged.</p>
+    <div class="logbar">
+      <label>Client <select id="logs-client"><option value="">All</option></select></label>
+      <label><input type="checkbox" id="logs-errors"> Errors only</label>
+    </div>
+    <div id="logs"></div>
   </section>
 
   <section id="config-panel" role="tabpanel" aria-labelledby="tab-config" hidden>
@@ -368,7 +386,7 @@ function renderWaiting(w) {
 }
 
 // Tabs: the choice stays in this browser. Ready for dev and In progress share the project bar.
-const TABS = ['waiting', 'ready', 'progress', 'runs', 'servers', 'config'];
+const TABS = ['waiting', 'ready', 'progress', 'runs', 'servers', 'logs', 'config'];
 let tab = 'waiting';
 function showTab(t) {
   if (!TABS.includes(t)) t = 'waiting';
@@ -383,6 +401,7 @@ function showTab(t) {
   $('runs-panel').hidden = t !== 'runs';
   $('servers-panel').hidden = t !== 'servers';
   $('config-panel').hidden = t !== 'config';
+  $('logs-panel').hidden = t !== 'logs';
   $('lists-panel').hidden = !lists;
   if (lists) $('lists-panel').setAttribute('aria-labelledby', 'tab-' + t);
   $('ready').hidden = t !== 'ready';
@@ -390,7 +409,7 @@ function showTab(t) {
   store.set('tab', t);
   syncRefresh();
 }
-$('tabs').addEventListener('click', e => { const t = e.target.closest('[role=tab]')?.dataset.tab; if (t) showTab(t); });
+$('tabs').addEventListener('click', e => { const t = e.target.closest('[role=tab]')?.dataset.tab; if (t) { showTab(t); if (t === 'logs') loadLogs(); } });
 $('tabs').addEventListener('keydown', e => {
   const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
   if (!step) return;
@@ -949,7 +968,7 @@ function renderServers(d) {
   }
   out.push(figs);
   if (!d.groups.length) {
-    out.push(el('p', 'empty', 'No servers running. Claude Code and Codex start one trello-mcp per session.'));
+    out.push(el('p', 'empty', 'No per-session servers running. Clients set up with --shared use the server in this dashboard: see Logs.'));
   } else {
     const th = el('div', 'sg th label');
     for (const [cls, v] of [['r', 'PID'], ['', 'Build'], ['r up', 'Up'], ['r', 'Active'], ['r cpu', 'CPU'], ['r', 'Mem'], ['', '']]) th.append(el('span', cls, v));
@@ -1015,12 +1034,47 @@ async function loadRuns() {
   }
 }
 
+// Logs: every server's tool calls, with the clients that made them.
+let calls = [];
+function renderLogs() {
+  const sel = $('logs-client'), pick = sel.value, clients = new Map();
+  for (const c of calls) {
+    const k = c.client || 'unknown', n = clients.get(k) || { calls: 0, errors: 0, last: c.t };
+    n.calls++;
+    if (c.error) n.errors++;
+    clients.set(k, n);
+  }
+  sel.replaceChildren(new Option('All', ''), ...[...clients].map(([k, n]) =>
+    new Option(`${k}: ${n.calls} calls, ${n.errors} errors, last ${when(n.last)}`, k)));
+  sel.value = clients.has(pick) ? pick : '';
+  const errors = calls.filter(c => c.error).length;
+  $('logs-n').textContent = errors || '';
+  $('logs-n').classList.toggle('red', errors > 0);
+  const shown = calls.filter(c => (!sel.value || (c.client || 'unknown') === sel.value) && (!$('logs-errors').checked || c.error));
+  const th = el('div', 'lg th label');
+  for (const [cls, v] of [['', 'When'], ['', 'Client'], ['', 'Tool'], ['', 'Card, list or board'], ['r', 'Took']]) th.append(el('span', cls, v));
+  const rows = shown.map(c => {
+    const row = el('div', 'lg');
+    row.append(el('span', '', when(c.t)), el('span', '', c.client || 'unknown'), el('b', '', c.tool), el('span', '', c.target || ''), el('span', 'r', `${c.ms} ms`));
+    if (c.error) row.append(el('span', 'bad', c.error));
+    return row;
+  });
+  $('logs').replaceChildren(...(rows.length ? [th, ...rows] : [el('p', 'empty', calls.length ? 'No calls match.' : 'No tool calls logged yet.')]));
+}
+async function loadLogs() {
+  try { calls = (await getJSON('/api/logs')).calls || []; renderLogs(); }
+  catch (e) { $('logs').replaceChildren(errorBox(e.message)); }
+}
+$('logs-client').addEventListener('change', renderLogs);
+$('logs-errors').addEventListener('change', renderLogs);
+
 // What Refresh does on each tab.
 const RELOAD = {
   waiting: () => loadWaiting(true),
   lists: async () => { listsMessage(listsBones()); if (await loadBoards(true)) await loadBoard(); },
   runs: loadRuns,
   servers: loadServers,
+  logs: loadLogs,
   config: () => { $('config').replaceChildren(configBones()); return Promise.all([loadBoards(true), loadRepos()]); },
 };
 // Every 5 minutes the Trello tabs swap fresh data in place.
@@ -1037,10 +1091,12 @@ $('config').replaceChildren(configBones());
 listsMessage(listsBones());
 loadServers();
 loadRuns();
+loadLogs();
 loadWaiting(false);
 loadRepos();
 loadBoards(false).then(ok => { if (ok) loadBoard(); });
 setInterval(() => { if (!document.hidden) loadServers(); }, 2000);
+setInterval(() => { if (!document.hidden && tab === 'logs') loadLogs(); }, 5000);
 setInterval(() => { if (!document.hidden) reloadQuietly(); }, 5 * 60 * 1000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { loadServers(); if (Date.now() - lastLoad >= 5 * 60 * 1000) reloadQuietly(); } });
 </script>

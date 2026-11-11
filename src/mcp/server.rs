@@ -16,7 +16,7 @@ use rmcp::{
 use serde_json::{Map, Value, json};
 
 use super::{
-    Args, Output, Server,
+    Args, Output, Server, log,
     tools::{FieldDefinition, Kind, REPLY_STYLE, TOOLS},
 };
 use crate::version;
@@ -209,30 +209,29 @@ impl ServerHandler for Server {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        let Some(definition) = TOOLS.iter().find(|tool| tool.name == request.name) else {
-            return Err(McpError::invalid_params(
-                format!("unknown tool {:?}", request.name),
-                None,
-            ));
-        };
-        let args = request.arguments.unwrap_or_default();
-        if let Err(message) = validate_arguments(&definition.fields, &args) {
-            return Ok(tool_error(message));
+        let started = std::time::Instant::now();
+        let (tool, target) = (request.name.to_string(), log::target(&request.arguments));
+        let result = self.run_tool(request, &context).await;
+        if let Some(path) = &self.log {
+            let error = match &result {
+                Ok(Ok(_)) => None,
+                Ok(Err(message)) => Some(message.as_str()),
+                Err(err) => Some(&*err.message),
+            };
+            log::append(
+                path,
+                &log::entry(
+                    &client_name(&context),
+                    &tool,
+                    &target,
+                    started.elapsed(),
+                    error,
+                ),
+            );
         }
-        let result = tokio::select! {
-            result = self.handle(definition.name, &args) => result,
-            () = context.ct.cancelled() => {
-                return Err(McpError::internal_error("request cancelled", None));
-            }
-        };
-        Ok(match result {
-            Ok(Output::Text(text)) => {
-                CallToolResult::success(vec![ContentBlock::text(text)]).into()
-            }
-            Ok(Output::Json(value)) => {
-                CallToolResult::success(vec![ContentBlock::text(encode_result(&value))]).into()
-            }
-            Err(err) => tool_error(err.to_string()),
+        Ok(match result? {
+            Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]).into(),
+            Err(message) => tool_error(message),
         })
     }
 
@@ -250,6 +249,60 @@ impl ServerHandler for Server {
         _: RequestContext<RoleServer>,
     ) -> Result<GetPromptResponse, McpError> {
         draft_reply_prompt(&request.name, request.arguments.as_ref()).map(Into::into)
+    }
+}
+
+/// Who called: the HTTP client's User-Agent on the shared server, else the name it gave at
+/// initialize (stdio).
+fn client_name(context: &RequestContext<RoleServer>) -> String {
+    context
+        .extensions
+        .get::<axum::http::request::Parts>()
+        .and_then(|parts| {
+            parts
+                .headers
+                .get(axum::http::header::USER_AGENT)?
+                .to_str()
+                .ok()
+        })
+        .map(str::to_string)
+        .or_else(|| {
+            context
+                .peer
+                .peer_info()
+                .map(|info| info.client_info.name.clone())
+        })
+        .unwrap_or_default()
+}
+
+impl Server {
+    /// Ok(Ok(text)) is the tool's result, Ok(Err(message)) a tool error the model sees.
+    async fn run_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<Result<String, String>, McpError> {
+        let Some(definition) = TOOLS.iter().find(|tool| tool.name == request.name) else {
+            return Err(McpError::invalid_params(
+                format!("unknown tool {:?}", request.name),
+                None,
+            ));
+        };
+        let args = request.arguments.unwrap_or_default();
+        if let Err(message) = validate_arguments(&definition.fields, &args) {
+            return Ok(Err(message));
+        }
+        let result = tokio::select! {
+            result = self.handle(definition.name, &args) => result,
+            () = context.ct.cancelled() => {
+                return Err(McpError::internal_error("request cancelled", None));
+            }
+        };
+        Ok(match result {
+            Ok(Output::Text(text)) => Ok(text),
+            Ok(Output::Json(value)) => Ok(encode_result(&value)),
+            Err(err) => Err(err.to_string()),
+        })
     }
 }
 

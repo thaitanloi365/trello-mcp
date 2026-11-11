@@ -69,7 +69,64 @@ mod tests {
         Options {
             command: "/opt/trello-mcp".into(),
             config_path: String::new(),
+            url: String::new(),
         }
+    }
+
+    #[test]
+    fn shared_switches_every_client_to_the_url_and_back() {
+        const URL: &str = "http://127.0.0.1:8790/mcp/secret";
+        let shared = Options {
+            url: URL.into(),
+            ..options()
+        };
+        let home = tempfile::tempdir().unwrap();
+        let other = home.path().join(".claude.json");
+        fs::write(&other, r#"{"mcpServers":{"other":{"command":"x"}}}"#).unwrap();
+        for (client, key) in [
+            ("claude-code", "url"),
+            ("opencode", "url"),
+            ("antigravity", "serverUrl"),
+            ("codex", "url"),
+        ] {
+            let trello = |target: &Path| -> Value {
+                let text = fs::read_to_string(target).unwrap();
+                if client == "codex" {
+                    let doc: toml::Table = toml::from_str(&text).unwrap();
+                    serde_json::to_value(&doc["mcp_servers"]["trello"]).unwrap()
+                } else {
+                    let doc: Value = serde_json::from_str(&text).unwrap();
+                    let key = if client == "opencode" {
+                        "mcp"
+                    } else {
+                        "mcpServers"
+                    };
+                    doc[key]["trello"].clone()
+                }
+            };
+            let target = setup(client, home.path()).unwrap();
+            assert!(trello(&target).get("command").is_some(), "{client}");
+            setup_user_in(client, home.path(), &no_env(), &shared).unwrap();
+            let entry = trello(&target);
+            assert_eq!(entry[key], URL, "{client}");
+            for stale in ["command", "args"] {
+                assert!(entry.get(stale).is_none(), "{client} keeps {stale}");
+            }
+            // Twice is the same file; back to stdio drops the URL.
+            let once = fs::read(&target).unwrap();
+            setup_user_in(client, home.path(), &no_env(), &shared).unwrap();
+            assert_eq!(fs::read(&target).unwrap(), once, "{client}");
+            setup(client, home.path()).unwrap();
+            let entry = trello(&target);
+            assert!(
+                entry.get(key).is_none() && entry.get("command").is_some(),
+                "{client}"
+            );
+        }
+        let doc: Value = serde_json::from_slice(&fs::read(&other).unwrap()).unwrap();
+        assert_eq!(doc["mcpServers"]["other"]["command"], "x");
+        let err = super::super::render("claude-desktop", &shared).unwrap_err();
+        assert!(err.to_string().contains("without --shared"), "{err}");
     }
 
     fn setup(client: &str, home: &Path) -> Result<PathBuf, Error> {

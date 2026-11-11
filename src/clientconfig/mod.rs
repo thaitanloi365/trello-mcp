@@ -26,6 +26,8 @@ pub const PROJECT_CLIENTS: [&str; 4] = [CODEX, CLAUDE_CODE, ANTIGRAVITY, OPENCOD
 pub struct Options {
     pub command: String,
     pub config_path: String,
+    /// The shared server's URL (`setup --shared`); empty starts one stdio server per session.
+    pub url: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -76,6 +78,9 @@ pub fn render(client: &str, options: &Options) -> Result<String, Error> {
         return Err(Error::Invalid("server command is required".into()));
     }
 
+    if !options.url.is_empty() {
+        return render_shared(client, &options.url);
+    }
     let mut args = vec!["serve".to_string()];
     if !options.config_path.trim().is_empty() {
         args.push("--config".into());
@@ -112,6 +117,31 @@ pub fn render(client: &str, options: &Options) -> Result<String, Error> {
         )]),
     };
     render_json(client, &payload)
+}
+
+/// The entry that points a client at the shared server instead of starting its own.
+fn render_shared(client: &str, url: &str) -> Result<String, Error> {
+    let entry = match client {
+        CODEX => return Ok(format!("[mcp_servers.trello]\nurl = {}\n", quote(url))),
+        CLAUDE_CODE => serde_json::json!({"type": "http", "url": url}),
+        OPENCODE => serde_json::json!({"type": "remote", "url": url, "enabled": true}),
+        ANTIGRAVITY => serde_json::json!({"serverUrl": url}),
+        other => {
+            return Err(Error::Invalid(format!(
+                "{other} cannot connect to a URL; set it up without --shared"
+            )));
+        }
+    };
+    let key = if client == OPENCODE {
+        "mcp"
+    } else {
+        "mcpServers"
+    };
+    let mut doc = serde_json::json!({ key: {"trello": entry} });
+    if client == OPENCODE {
+        doc["$schema"] = "https://opencode.ai/config.json".into();
+    }
+    render_json(client, &doc)
 }
 
 fn render_json(client: &str, payload: &impl Serialize) -> Result<String, Error> {
@@ -177,6 +207,7 @@ mod tests {
         Options {
             command: COMMAND.into(),
             config_path: config.into(),
+            url: String::new(),
         }
     }
 
@@ -257,6 +288,7 @@ mod tests {
         let o = Options {
             command: " ".into(),
             config_path: String::new(),
+            url: String::new(),
         };
         assert_eq!(
             render("codex", &o).unwrap_err().to_string(),
@@ -269,6 +301,7 @@ mod tests {
         let o = Options {
             command: "/a&b<c>".into(),
             config_path: String::new(),
+            url: String::new(),
         };
         assert!(
             render("claude-desktop", &o)
@@ -289,6 +322,7 @@ mod tests {
                 let options = Options {
                     command: "/x/trello-mcp".into(),
                     config_path: config_path.into(),
+                    url: String::new(),
                 };
                 assert_eq!(render(client, &options).unwrap(), want, "{client}{suffix}");
             }

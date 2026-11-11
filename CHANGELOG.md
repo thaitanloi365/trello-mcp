@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+- `setup --shared` points Codex, Claude Code, Antigravity and OpenCode at one MCP server inside
+  the dashboard (`http://127.0.0.1:8790/mcp/<secret>`) instead of one `trello-mcp serve` per
+  session. User scope only; `setup` without it switches back.
+- Every tool call is logged to `calls.log` beside the config file, and the dashboard has a Logs
+  tab for it.
+
 - `setup` now installs into the home directory by default (`--scope user`); `--scope project` is the
   opt-in for project-local files. Earlier releases set up the project folder by default: pass
   `--scope project` to keep that, and remove stale project entries if clients load trello twice.

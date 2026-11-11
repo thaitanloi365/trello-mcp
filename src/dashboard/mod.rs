@@ -27,6 +27,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use rmcp::transport::streamable_http_server::{
+    StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
+};
 use serde_json::{Value, json};
 
 use crate::{
@@ -78,6 +81,10 @@ pub(crate) struct Dash {
     saving: Mutex<()>,
     /// One file per card with the Orca session sent to it.
     saved: PathBuf,
+    /// The call log every server appends to.
+    log: PathBuf,
+    /// The secret in the shared MCP server's path; "" serves none.
+    mcp_token: String,
 }
 
 fn now() -> f64 {
@@ -122,6 +129,8 @@ impl Dash {
             projects: dir.join("dashboard.json"),
             saving: Mutex::new(()),
             saved: sessions_dir(dir),
+            log: dir.join(mcp::log::FILE),
+            mcp_token: mcp_token(dir).unwrap_or_default(),
         })
     }
 
@@ -182,6 +191,31 @@ impl Dash {
     }
 }
 
+/// The shared MCP server's secret, made on first use and kept beside the config file in `dir`.
+/// It keeps a process that cannot read your files, or another user, off your Trello token.
+fn mcp_token(dir: &FsPath) -> Result<String> {
+    let path = dir.join("mcp-token");
+    if let Ok(token) = std::fs::read_to_string(&path)
+        && !token.trim().is_empty()
+    {
+        return Ok(token.trim().to_string());
+    }
+    let mut bytes = [0u8; 16];
+    std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut bytes)?;
+    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    std::fs::create_dir_all(dir)?;
+    crate::util::write_atomic(&path, token.as_bytes(), 0o600, ".mcp-token-")?;
+    Ok(token)
+}
+
+/// The URL `setup --shared` gives clients: the dashboard at its default address.
+pub(crate) fn mcp_url(config_path: &str) -> Result<String> {
+    Ok(format!(
+        "http://{ADDR}/mcp/{}",
+        mcp_token(&config_dir(config_path)?)?
+    ))
+}
+
 /// Where each card's Orca session is saved, beside the config file in `dir`.
 fn sessions_dir(dir: &FsPath) -> PathBuf {
     dir.join("orca-sessions")
@@ -233,15 +267,15 @@ pub(crate) async fn run(
                 .with_context(|| format!("listen {tailnet_addr} (--tailnet-addr)"))?,
         )
     };
+    let dir = config_dir(config_path)?;
     // A bad config still serves the server table; the Trello sections show why.
     let trello = config::Manager::new(config_path)
-        .map(|m| mcp::Server::new(Arc::new(trello::Client::new(Arc::new(m)))))
+        .map(|m| mcp::Server::new(Arc::new(trello::Client::new(Arc::new(m)))).with_log(&dir))
         .map_err(|e| e.to_string());
     let cli = std::env::current_exe()
         .and_then(|p| p.canonicalize())
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let dir = config_dir(config_path)?;
     let dash = Dash::new(trello, cli, orca::cli(), port, tailscale, &dir);
     // A scan a minute, so ACTIVE knows when each server last worked.
     let d = dash.clone();
@@ -297,30 +331,46 @@ fn check_tailscale(ts: &str) -> Result<()> {
 
 /// The local listener (`tailnet` false) or the one `tailscale serve` points at (true).
 pub(crate) fn router(dash: Arc<Dash>, tailnet: bool) -> Router {
-    Router::new()
-        .route(
-            "/",
-            get(|| async { ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], PAGE) }),
-        )
-        .route("/api/servers", get(servers_now))
-        .route("/api/servers/{pid}/{start}/stop", post(stop_server))
-        .route("/api/boards", get(boards_now))
-        .route("/api/waiting", get(waiting_now))
-        .route("/api/project", post(project_set))
-        .route("/api/board", get(board_now))
-        .route("/api/search", get(search))
-        .route("/api/orca/repos", get(orca_repos))
-        .route("/api/orca/sessions", get(orca_sessions))
-        .route("/api/orca/send", post(orca_send))
-        .route("/api/orca/focus", post(orca_focus))
-        .route("/api/orca/runs", get(orca_runs))
-        .route("/api/orca/resume", post(orca_resume))
-        .fallback(|| async { http_error(StatusCode::NOT_FOUND, "404 page not found") })
-        .layer(middleware::from_fn_with_state(
-            (dash.clone(), tailnet),
-            guard,
-        ))
-        .with_state(dash)
+    let mut app = Router::new();
+    // The shared MCP server, on this Mac only. Stateless: no session to lose when the dashboard
+    // restarts, none to expire while a client sits idle.
+    if let (false, Ok(server), false) = (tailnet, &dash.trello, dash.mcp_token.is_empty()) {
+        let server = server.clone();
+        app = app.nest_service(
+            &format!("/mcp/{}", dash.mcp_token),
+            StreamableHttpService::new(
+                move || Ok(server.clone()),
+                Arc::new(NeverSessionManager::default()),
+                StreamableHttpServerConfig::default()
+                    .with_legacy_session_mode(false)
+                    .with_json_response(true),
+            ),
+        );
+    }
+    app.route(
+        "/",
+        get(|| async { ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], PAGE) }),
+    )
+    .route("/api/servers", get(servers_now))
+    .route("/api/servers/{pid}/{start}/stop", post(stop_server))
+    .route("/api/boards", get(boards_now))
+    .route("/api/waiting", get(waiting_now))
+    .route("/api/project", post(project_set))
+    .route("/api/board", get(board_now))
+    .route("/api/search", get(search))
+    .route("/api/logs", get(logs_now))
+    .route("/api/orca/repos", get(orca_repos))
+    .route("/api/orca/sessions", get(orca_sessions))
+    .route("/api/orca/send", post(orca_send))
+    .route("/api/orca/focus", post(orca_focus))
+    .route("/api/orca/runs", get(orca_runs))
+    .route("/api/orca/resume", post(orca_resume))
+    .fallback(|| async { http_error(StatusCode::NOT_FOUND, "404 page not found") })
+    .layer(middleware::from_fn_with_state(
+        (dash.clone(), tailnet),
+        guard,
+    ))
+    .with_state(dash)
 }
 
 /// Every route, never framed or cached. Trust follows the listener, not the Host a client sends:
@@ -368,6 +418,19 @@ async fn servers_now(State(dash): State<Arc<Dash>>) -> Response {
         &dash.cli,
         &dash.home,
     ))
+}
+
+/// The last 500 tool calls of every server, newest first.
+async fn logs_now(State(dash): State<Arc<Dash>>, h: HeaderMap) -> Response {
+    // The log names your cards and boards: only our page may read it.
+    if !dash.is_ours(&h) {
+        return http_error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let path = dash.log.clone();
+    let calls = tokio::task::spawn_blocking(move || mcp::log::tail(&path, 500))
+        .await
+        .unwrap_or_default();
+    json_ok(&json!({"calls": calls}))
 }
 
 /// Quit's Confirm: SIGTERM now, SIGKILL after 5 s; only for a server the last scan listed.
