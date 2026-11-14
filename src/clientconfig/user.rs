@@ -54,7 +54,9 @@ pub(crate) fn setup_user_in(
 ) -> Result<PathBuf, Error> {
     let client = normalize_client(client)?;
     let target = user_config_path(client, home, env)?;
-    apply(client, &target, options, 0o600)
+    // Claude Code's per-folder entries win over the user one: a shared setup drops ours.
+    let drop_local = client == CLAUDE_CODE && !options.url.is_empty();
+    apply(client, &target, options, 0o600, drop_local)
 }
 
 #[cfg(test)]
@@ -127,6 +129,26 @@ mod tests {
         assert_eq!(doc["mcpServers"]["other"]["command"], "x");
         let err = super::super::render("claude-desktop", &shared).unwrap_err();
         assert!(err.to_string().contains("without --shared"), "{err}");
+    }
+
+    #[test]
+    fn shared_claude_code_drops_local_stdio_entries() {
+        let home = tempfile::tempdir().unwrap();
+        let target = home.path().join(".claude.json");
+        let local = r#"{"mcpServers": {"trello": {"type": "stdio", "command": "/x/trello-mcp", "args": ["serve"]}}}"#;
+        fs::write(&target, format!(r#"{{"projects": {{"/a": {local}}}}}"#)).unwrap();
+        // Stdio setup leaves local entries alone; shared drops them.
+        setup("claude-code", home.path()).unwrap();
+        let doc: Value = serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+        assert!(doc["projects"]["/a"]["mcpServers"].get("trello").is_some());
+        let shared = Options {
+            url: "http://127.0.0.1:8790/mcp/s".into(),
+            ..options()
+        };
+        setup_user_in("claude-code", home.path(), &no_env(), &shared).unwrap();
+        let doc: Value = serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+        assert_eq!(doc["projects"]["/a"]["mcpServers"], serde_json::json!({}));
+        assert_eq!(doc["mcpServers"]["trello"]["type"], "http");
     }
 
     fn setup(client: &str, home: &Path) -> Result<PathBuf, Error> {

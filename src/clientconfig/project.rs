@@ -47,7 +47,7 @@ pub fn setup_project(client: &str, project_dir: &str, options: &Options) -> Resu
     };
     let root = crate::util::absolute(Path::new(project_dir))
         .map_err(io_err("resolve project directory".into()))?;
-    apply(client, &root.join(relative), options, 0o644)
+    apply(client, &root.join(relative), options, 0o644, false)
 }
 
 /// Project config files in `dir` that already start trello-mcp for one of
@@ -123,6 +123,7 @@ pub(super) fn apply(
     target: &Path,
     options: &Options,
     new_mode: u32,
+    drop_local: bool,
 ) -> Result<PathBuf, Error> {
     let generated = render(client, options)?;
     let mut target = target.to_path_buf();
@@ -164,7 +165,10 @@ pub(super) fn apply(
                 .ok()
                 .and_then(|mut d| d.get_mut(key)?.get_mut("trello").map(Value::take))
                 .ok_or_else(|| Error::Invalid(format!("generated {client} config is invalid")))?;
-            let out = jsonpatch::patch(text, key, "trello", &entry, eol).map_err(wrap)?;
+            let mut out = jsonpatch::patch(text, key, "trello", &entry, eol).map_err(wrap)?;
+            if drop_local {
+                out = jsonpatch::drop_local_trello(&out).map_err(wrap)?;
+            }
             if serde_json::from_str::<Value>(text).is_ok()
                 && let Err(e) = serde_json::from_str::<Value>(&out)
             {

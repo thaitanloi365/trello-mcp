@@ -299,3 +299,106 @@ pub(super) fn patch(
     }
     Ok(out)
 }
+
+/// Drops each `projects.<dir>.mcpServers.trello` in Claude Code's
+/// `~/.claude.json` that only starts this server (`trello-mcp serve`, no
+/// config or env). Claude Code lets those local entries win over the user
+/// entry, so they would keep a stdio server per session after a switch to the
+/// shared one. Entries with their own config, env or command are kept.
+pub(super) fn drop_local_trello(text: &str) -> Res<String> {
+    let Ok(doc) = serde_json::from_str::<Value>(text) else {
+        return Ok(text.to_string());
+    };
+    let Some(projects) = doc.get("projects").and_then(Value::as_object) else {
+        return Ok(text.to_string());
+    };
+    let mut out = text.to_string();
+    for (dir, project) in projects {
+        let Some(entry) = project.pointer("/mcpServers/trello") else {
+            continue;
+        };
+        if !plain_stdio(entry) {
+            continue;
+        }
+        let Some(_) = lookup(&out, &["projects", dir, "mcpServers", "trello"])? else {
+            continue;
+        };
+        out = remove(&out, &["projects", dir, "mcpServers"], "trello")?;
+    }
+    Ok(out)
+}
+
+fn plain_stdio(entry: &Value) -> bool {
+    let Some(obj) = entry.as_object() else {
+        return false;
+    };
+    let ours = obj
+        .get("command")
+        .and_then(Value::as_str)
+        .is_some_and(|c| std::path::Path::new(c).file_name() == Some("trello-mcp".as_ref()));
+    let serve = obj.get("args") == Some(&serde_json::json!(["serve"]));
+    let rest = obj.iter().all(|(k, v)| match k.as_str() {
+        "type" => v == "stdio",
+        "command" | "args" => true,
+        "env" => v.as_object().is_some_and(|m| m.is_empty()),
+        _ => false,
+    });
+    ours && serve && rest
+}
+
+/// Removes member `name` from the object at `path`, with its comma.
+fn remove(text: &str, path: &[&str], name: &str) -> Res<String> {
+    let b = text.as_bytes();
+    let Some((open, _)) = lookup(text, path)? else {
+        return Ok(text.to_string());
+    };
+    if b[open] != b'{' {
+        return Ok(text.to_string());
+    }
+    let (ms, close) = members(b, open, 0)?;
+    let Some(i) = ms.iter().rposition(|m| m.key == name) else {
+        return Ok(text.to_string());
+    };
+    Ok(match (i.checked_sub(1), ms.get(i + 1)) {
+        (_, Some(next)) => splice(text, ms[i].kstart, next.kstart, ""),
+        (Some(prev), None) => splice(text, ms[prev].vend, ms[i].vend, ""),
+        (None, None) => splice(text, open + 1, close, ""),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drops_only_plain_local_trello_entries() {
+        let text = r#"{
+  "mcpServers": {"trello": {"type": "http", "url": "u"}},
+  "projects": {
+    "/a": {"mcpServers": {"trello": {"type": "stdio", "command": "/x/bin/trello-mcp", "args": ["serve"], "env": {}}}, "keep": 1},
+    "/b": {"mcpServers": {"other": {"command": "o"}, "trello": {"type": "stdio", "command": "/x/trello-mcp", "args": ["serve"]}}},
+    "/c": {"mcpServers": {"trello": {"command": "/x/trello-mcp", "args": ["serve"]}, "z": {}}},
+    "/d": {"mcpServers": {"trello": {"command": "/x/trello-mcp", "args": ["serve", "--config", "/p"]}}},
+    "/e": {"mcpServers": {"trello": {"command": "/x/trello-mcp", "args": ["serve"], "env": {"K": "v"}}}},
+    "/f": {"mcpServers": {"trello": {"command": "/x/other", "args": ["serve"]}}}
+  }
+}"#;
+        let out = drop_local_trello(text).unwrap();
+        let doc: Value = serde_json::from_str(&out).unwrap();
+        let p = &doc["projects"];
+        assert_eq!(p["/a"]["mcpServers"], serde_json::json!({}));
+        assert_eq!(p["/a"]["keep"], 1);
+        assert_eq!(
+            p["/b"]["mcpServers"],
+            serde_json::json!({"other": {"command": "o"}})
+        );
+        assert_eq!(p["/c"]["mcpServers"], serde_json::json!({"z": {}}));
+        for kept in ["/d", "/e", "/f"] {
+            assert!(p[kept]["mcpServers"].get("trello").is_some(), "{kept}");
+        }
+        assert_eq!(doc["mcpServers"]["trello"]["url"], "u");
+        // Every other line is untouched, and a second pass changes nothing.
+        assert!(out.contains(r#""/d": {"mcpServers": {"trello": {"command": "/x/trello-mcp", "args": ["serve", "--config", "/p"]}}},"#));
+        assert_eq!(drop_local_trello(&out).unwrap(), out);
+    }
+}
