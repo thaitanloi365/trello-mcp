@@ -7,6 +7,11 @@ description = "Model Context Protocol server for Trello"
 license = "MIT"
 repository = "https://github.com/thaitanloi365/trello-mcp"
 
+[lib]
+# The binary compiles the same modules and runs their tests.
+test = false
+doctest = false
+
 [dependencies]
 anyhow = "1"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "query"] }
