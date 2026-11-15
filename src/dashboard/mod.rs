@@ -1150,7 +1150,10 @@ mod tests {
             ])),
             "/boards/b1" => json_response(feeds::tests::board()),
             "/members/me/notifications" => {
-                json_response(json!([feeds::tests::mention("a1", "c1", 60, "@me hi")]))
+                // The fixture's dates follow feeds' fixed clock; /api/waiting uses the real one.
+                let mut m = feeds::tests::mention("a1", "c1", 60, "@me hi");
+                m["date"] = json!(feeds::iso_date(now() as i64 - 60));
+                json_response(json!([m]))
             }
             "/members/me/actions" => json_response(json!([])),
             "/cards/c1" => json_response(feeds::tests::in_context("c1")),
