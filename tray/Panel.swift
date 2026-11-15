@@ -11,6 +11,7 @@ final class PanelModel {
     var rows: [ServerRow] = [] { didSet { sameShape(oldValue, rows) ? ticked() : changed() } }
     var confirming: ServerID? { didSet { ticked() } }   // Quit clicked once: its Confirm shows
     var stopping: Set<ServerID> = [] { didSet { ticked() } }
+    var clients: [[String]] = [] { didSet { if clients != oldValue { changed() } } }    // the shared server's clients: name, last active
     var error: String? { didSet { changed() } }
     var cap: CGFloat = 800 { didSet { changed() } }     // tallest the scrolling middle may be; Tray sets it from the screen
     var stats = "" { didSet { ticked() } }               // the tray's own CPU and memory
@@ -393,7 +394,22 @@ final class PanelController: NSViewController {
             box.layer?.borderColor = p.redInk.cgColor
             out.append(box)
         }
-        return out + [m.rows.isEmpty ? empty() : servers()]
+        // With clients on the shared server, no per-session server is the normal state, not an empty one.
+        if !m.rows.isEmpty || m.clients.isEmpty { out.append(m.rows.isEmpty ? empty() : servers()) }
+        if !m.clients.isEmpty { out.append(clients()) }
+        return out
+    }
+
+    /// The shared server's clients (the one in the dashboard): name and last request.
+    func clients() -> NSView {
+        let head = hstack([stretch(caps("SHARED SERVER CLIENTS")), fixed(caps("ACTIVE", align: .right), w: 64)], 6)
+        let rows = m.clients.map { c -> NSView in
+            let name = label(c[0], 13, .b, p.ink)
+            name.lineBreakMode = .byTruncatingTail
+            name.setContentCompressionResistancePriority(.init(100), for: .horizontal)
+            return fixed(hstack([stretch(name), fixed(label(c[1], 12, p.muted, align: .right), w: 64)], 6), h: 26)
+        }
+        return vstack([vstack([head, block(p.ink, h: 1)], 4)] + rows)
     }
 
     func header() -> NSView {

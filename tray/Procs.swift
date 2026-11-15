@@ -213,6 +213,12 @@ func tailnetURL(_ ts: String) -> URL? {
     return URL(string: "https://\(parts[0])")
 }
 
+/// The panel's client rows (name, last active) from the dashboard's /api/clients body; none if it is not that.
+func clientRows(_ body: Data) -> [[String]] {
+    let list = (try? JSONSerialization.jsonObject(with: body) as? [String: Any])?["clients"] as? [[String: Any]] ?? []
+    return list.compactMap { c in (c["client"] as? String).map { [$0, c["active"] as? String ?? "—"] } }
+}
+
 /// `trello-mcp dashboard`'s arguments, with the tray's --tailscale.
 func dashboardArgs(_ ts: String) -> [String] { ["dashboard"] + (ts.isEmpty ? [] : ["--tailscale", ts]) }
 

@@ -343,7 +343,15 @@ func views(_ v: NSView) -> [NSView] { [v] + v.subviews.flatMap(views) }
 pm.stats = trayStats(nil, cpu: 5, mem: 21 << 20, at: t0)
 let shown = advance([], [srv(10, folder: "/Users/me/P/eventcreate_app", path: "/Users/me/p/trello-mcp/bin/trello-mcp"), srv(11, folder: "/Users/me/P/eventcreate_app", ppid: 901),
                          srv(12, folder: nil, ppid: 1, parentStarted: nil)], prevAt: nil, at: t0)
+precondition(clientRows(Data(#"{"clients":[{"client":"claude-code/2.1","active":"3m ago"},{"active":"now"}]}"#.utf8)) == [["claude-code/2.1", "3m ago"]]
+             && clientRows(Data("404 page not found".utf8)).isEmpty, "client rows from /api/clients; none from another body")
+pm.clients = [["claude-code/2.1 (cli)", "now"], [String(repeating: "long-client-name/", count: 6), "3h ago"]]
+let onlyClients = panelSize()
+precondition(onlyClients.width == 460 && views(pc.view).contains { ($0 as? NSTextField)?.stringValue == "SHARED SERVER CLIENTS" }
+             && !views(pc.view).contains { ($0 as? NSTextField)?.stringValue == "No servers running" }, "clients alone: their table, no empty state: \(onlyClients)")
 pm.rows = shown
+precondition(panelSize().width == 460 && panelSize().height > onlyClients.height, "servers above the clients: \(panelSize())")
+pm.clients = []
 pm.error = stopFailure(20, EPERM)
 precondition(panelSize().width == 460, "panel with servers and an error: \(panelSize())")
 pm.confirming = shown[0].s.id
@@ -567,6 +575,7 @@ final class Tray: NSObject, NSApplicationDelegate {
         if let then { afterScan.append(then) }
         guard !scanning else { return }
         scanning = true
+        fetchClients()
         scanQueue.async { [unowned self] in
             let found = scanner.scan()
             let at = Date()
@@ -578,6 +587,17 @@ final class Tray: NSObject, NSApplicationDelegate {
                 waiting.forEach { $0() }
             }
         }
+    }
+
+    /// Asks the dashboard who uses its shared server; a dashboard that is down lists none.
+    func fetchClients() {
+        guard !model.cli.isEmpty else { return }    // without --cli the tray starts no dashboard
+        var req = URLRequest(url: dashboardURL.appendingPathComponent("api/clients"), timeoutInterval: 2)
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+            let rows = clientRows(data ?? Data())
+            DispatchQueue.main.async { self?.model.clients = rows }
+        }.resume()
     }
 
     /// Hands a scan and the tray's own usage to the panel.

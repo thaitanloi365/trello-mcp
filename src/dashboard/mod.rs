@@ -85,6 +85,8 @@ pub(crate) struct Dash {
     log: PathBuf,
     /// The secret in the shared MCP server's path; "" serves none.
     mcp_token: String,
+    /// When each client (its User-Agent) last called the shared MCP server; gone on restart.
+    clients: Mutex<HashMap<String, f64>>,
 }
 
 fn now() -> f64 {
@@ -131,6 +133,7 @@ impl Dash {
             saved: sessions_dir(dir),
             log: dir.join(mcp::log::FILE),
             mcp_token: mcp_token(dir).unwrap_or_default(),
+            clients: Mutex::default(),
         })
     }
 
@@ -359,6 +362,7 @@ pub(crate) fn router(dash: Arc<Dash>, tailnet: bool) -> Router {
     .route("/api/board", get(board_now))
     .route("/api/search", get(search))
     .route("/api/logs", get(logs_now))
+    .route("/api/clients", get(clients_now))
     .route("/api/orca/repos", get(orca_repos))
     .route("/api/orca/sessions", get(orca_sessions))
     .route("/api/orca/send", post(orca_send))
@@ -393,6 +397,11 @@ async fn guard(
     if !allowed {
         return http_error(StatusCode::FORBIDDEN, "forbidden");
     }
+    if !dash.mcp_token.is_empty() && req.uri().path().strip_prefix("/mcp/") == Some(&dash.mcp_token)
+    {
+        let client: String = hdr(h, header::USER_AGENT).chars().take(60).collect();
+        dash.clients.lock().unwrap().insert(client, now());
+    }
     let mut resp = next.run(req).await;
     let h = resp.headers_mut();
     h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
@@ -418,6 +427,26 @@ async fn servers_now(State(dash): State<Arc<Dash>>) -> Response {
         &dash.cli,
         &dash.home,
     ))
+}
+
+/// A client stays listed this long after its last request.
+const CLIENT_TTL: f64 = 24.0 * 3600.0;
+
+/// The shared server's clients seen in the last day, latest first, as display text.
+async fn clients_now(State(dash): State<Arc<Dash>>) -> Response {
+    let at = now();
+    let mut seen = dash.clients.lock().unwrap();
+    seen.retain(|_, last| at - *last < CLIENT_TTL);
+    let mut clients: Vec<(&String, &f64)> = seen.iter().collect();
+    clients.sort_by(|a, b| b.1.total_cmp(a.1).then(a.0.cmp(b.0)));
+    let clients: Vec<Value> = clients
+        .into_iter()
+        .map(|(name, last)| {
+            let name = if name.is_empty() { "unknown" } else { name };
+            json!({"client": name, "active": servers::active_text(Some(*last), at)})
+        })
+        .collect();
+    json_ok(&json!({"clients": clients}))
 }
 
 /// The last 500 tool calls of every server, newest first.
@@ -948,6 +977,36 @@ mod tests {
         tokio::spawn(async move { axum::serve(local, a).await.unwrap() });
         tokio::spawn(async move { axum::serve(ts, b).await.unwrap() });
         (format!("127.0.0.1:{port}"), ts_base)
+    }
+
+    #[tokio::test]
+    async fn clients_lists_callers_of_the_shared_server_only() {
+        let trello = test_server(&[], |_| not_found()).await;
+        let local = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = local.local_addr().unwrap().port();
+        let dir = tempfile::tempdir().unwrap();
+        let dash = Dash::new(
+            Ok(trello.server.clone()),
+            String::new(),
+            String::new(),
+            port,
+            "",
+            dir.path(),
+        );
+        let token = dash.mcp_token.clone();
+        assert_eq!(token.len(), 32);
+        let app = router(dash, false);
+        tokio::spawn(async move { axum::serve(local, app).await.unwrap() });
+        let to = format!("127.0.0.1:{port}");
+        let host = format!("localhost:{port}");
+        let from = |name: &'static str| [("Host", host.as_str()), ("User-Agent", name)].to_vec();
+        call(&to, "POST", "/mcp/wrong", &from("intruder/1")).await;
+        assert_eq!(get_json(&to, "/api/clients").await["clients"], json!([]));
+        call(&to, "POST", &format!("/mcp/{token}"), &from("codex/1")).await;
+        assert_eq!(
+            get_json(&to, "/api/clients").await["clients"],
+            json!([{"client": "codex/1", "active": "now"}])
+        );
     }
 
     /// (status, raw response) of one HTTP/1.1 request sent as written, so the test picks the Host.
